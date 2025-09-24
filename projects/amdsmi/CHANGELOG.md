@@ -8,6 +8,10 @@ Full documentation for amd_smi_lib is available at [https://rocm.docs.amd.com/pr
 
 ### Added
 
+- **Added `oam_id` to `amdsmi_enumeration_info_t`**.
+  - `amd-smi list -e` now displays `OAM_ID` (Physical XGMI ID / OAM ID).
+  - Added `--enumeration` as a long-form alias for `-e` in `amd-smi list`.
+
 - **Added VRAM and GTT tuning interface**.  
   - New `amd-smi static --mem-carveout` to view VRAM carveout options.
   - New `amd-smi set --mem-carveout` to change the VRAM carveout (APU).

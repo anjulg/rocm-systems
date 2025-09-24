@@ -1007,6 +1007,45 @@ class AMDSMIParser(argparse.ArgumentParser):
             help=iterations_help,
         )
 
+    def _add_watch_arguments(self, subcommand_parser: argparse.ArgumentParser):
+        # Device arguments help text
+        watch_help = "Reprint the command in a loop of INTERVAL seconds"
+        watch_time_help = "The total duration of TIME to watch the command"
+        iterations_help = "The total number of ITERATIONS to repeat the command"
+
+        watch_arguments_group = subcommand_parser.add_argument_group("Watch Arguments")
+
+        # Mutually Exclusive Args within the subparser
+        watch_arguments_group.add_argument(
+            "-w",
+            "--watch",
+            action="store",
+            metavar="INTERVAL",
+            type=lambda value: self._positive_int(value, "--watch"),
+            required=False,
+            help=watch_help,
+        )
+        watch_arguments_group.add_argument(
+            "-W",
+            "--watch_time",
+            action=self._check_watch_selected(),
+            metavar="TIME",
+            type=lambda value: self._positive_int(value, "--watch_time"),
+            required=False,
+            help=watch_time_help,
+        )
+        watch_arguments_group.add_argument(
+            "-i",
+            "--iterations",
+            action=self._check_watch_selected(),
+            metavar="ITERATIONS",
+            type=lambda value: self._positive_int(value, "--iterations"),
+            required=False,
+            help=iterations_help,
+        )
+
+        return watch_arguments_group
+
     def _validate_cpu_core(self, value):
         if value == "":
             outputformat = self.helpers.get_output_format()
@@ -1379,45 +1418,6 @@ class AMDSMIParser(argparse.ArgumentParser):
 
         return command_modifier_group
 
-    def _add_watch_arguments(self, subcommand_parser: argparse.ArgumentParser):
-        # Device arguments help text
-        watch_help = "Reprint the command in a loop of INTERVAL seconds"
-        watch_time_help = "The total duration of TIME to watch the command"
-        iterations_help = "The total number of ITERATIONS to repeat the command"
-
-        watch_arguments_group = subcommand_parser.add_argument_group("Watch Arguments")
-
-        # Mutually Exclusive Args within the subparser
-        watch_arguments_group.add_argument(
-            "-w",
-            "--watch",
-            action="store",
-            metavar="INTERVAL",
-            type=lambda value: self._positive_int(value, "--watch"),
-            required=False,
-            help=watch_help,
-        )
-        watch_arguments_group.add_argument(
-            "-W",
-            "--watch_time",
-            action=self._check_watch_selected(),
-            metavar="TIME",
-            type=lambda value: self._positive_int(value, "--watch_time"),
-            required=False,
-            help=watch_time_help,
-        )
-        watch_arguments_group.add_argument(
-            "-i",
-            "--iterations",
-            action=self._check_watch_selected(),
-            metavar="ITERATIONS",
-            type=lambda value: self._positive_int(value, "--iterations"),
-            required=False,
-            help=iterations_help,
-        )
-
-        return watch_arguments_group
-
     def _add_default_parser(self, subparsers: argparse._SubParsersAction, func):
         # there should be no args to parse here so let this be a dummy function to preserve later logic
         default_parser = subparsers.add_parser("default", description=None)
@@ -1488,7 +1488,7 @@ class AMDSMIParser(argparse.ArgumentParser):
                             \nIn virtualization environments, it can also list VFs associated to each\
                             \nGPU with some basic information for each VF."
         enumeration_help = "Enumeration mapping to other features.\
-                            \n    Includes CARD, RENDER, HSA_ID, HIP_ID, and HIP_UUID."
+                            \n    Includes CARD, RENDER, HSA_ID, HIP_ID, HIP_UUID, and OAM_ID"
 
         # Create list subparser
         list_parser = subparsers.add_parser(
@@ -1499,7 +1499,7 @@ class AMDSMIParser(argparse.ArgumentParser):
         list_parser.set_defaults(func=func)
 
         # Create -e subparser
-        list_parser.add_argument("-e", action="store_true", help=enumeration_help)
+        list_parser.add_argument("-e", "--enumeration", action="store_true", help=enumeration_help)
 
         # Add Universal Arguments
         self._add_device_arguments(list_parser, required=False)
