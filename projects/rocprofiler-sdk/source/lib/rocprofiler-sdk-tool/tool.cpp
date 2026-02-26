@@ -3135,7 +3135,14 @@ tool_detach(void* /*tool_data*/)
         rocprofiler_get_timestamp(&(tool_metadata->process_end_ns));
 
     // Check configuration to decide between async or sync output generation
-    if(tool::get_config().output_generation_async)
+    if(tool::get_config().output_generation_sync)
+    {
+        // Synchronous output generation - complete before returning
+        // This ensures output files are fully written before detach returns
+        ::output_generation_thread.wlock([](auto& thread_ptr) { reset_output_thread(thread_ptr); });
+        generate_output(cleanup_mode::reset);
+    }
+    else
     {
         // Launch generate output in an async background thread
         // This allows tool_detach to return immediately without waiting.
@@ -3155,13 +3162,6 @@ tool_detach(void* /*tool_data*/)
                 }
             });
         });
-    }
-    else
-    {
-        // Synchronous output generation - complete before returning
-        // This ensures output files are fully written before detach returns
-        ::output_generation_thread.wlock([](auto& thread_ptr) { reset_output_thread(thread_ptr); });
-        generate_output(cleanup_mode::reset);
     }
 }
 
