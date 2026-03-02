@@ -162,10 +162,10 @@ struct config : output_config
     bool     att_param_target_only = get_env<int>("ROCPROF_ATT_PARAM_TARGET_ONLY", 0) != 0;
     uint64_t att_consecutive_kernels = get_env<uint64_t>("ROCPROF_ATT_CONSECUTIVE_KERNELS", 0);
 
-    size_t spm_buffer_size_kb = get_env<size_t>("ROCPROF_SPM_BUFFER_SIZE", 1 << 15);
-    size_t spm_timeout_ms     = get_env<size_t>("ROCPROF_SPM_TIMEOUT_MS", 0);
-    double spm_frequency_ghz  = get_env<double>("ROCPROF_SPM_FREQUENCY", 0.5);
-
+    size_t      spm_sample_interval      = get_env<uint64_t>("ROCPROF_SPM_SAMPLE_INTERVAL", 0);
+    std::string spm_sample_interval_unit = get_env("ROCPROF_SPM_SAMPLE_INTERVAL_UNIT", "none");
+    rocprofiler_spm_parameter_type_t spm_sample_interval_unit_value =
+        ROCPROFILER_SPM_PARAMETER_TYPE_NONE;
     std::string kernel_filter_include   = get_env("ROCPROF_KERNEL_FILTER_INCLUDE_REGEX", ".*");
     std::string kernel_filter_exclude   = get_env("ROCPROF_KERNEL_FILTER_EXCLUDE_REGEX", "");
     std::string pc_sampling_method      = get_env("ROCPROF_PC_SAMPLING_METHOD", "none");
@@ -235,7 +235,8 @@ config::get_attach_invariants() const
                            extra_counters_contents,
                            counter_groups_random_seed,
                            counter_groups_interval,
-                           benchmark_mode);
+                           benchmark_mode,
+                           spm_counter_collection);
 }
 
 inline bool
@@ -294,6 +295,9 @@ config::save(ArchiveT& ar) const
     CFG_SERIALIZE_MEMBER(collection_periods);
     CFG_SERIALIZE_MEMBER(counters);
     CFG_SERIALIZE_MEMBER(spm_counters);
+    CFG_SERIALIZE_MEMBER(spm_sample_interval);
+    CFG_SERIALIZE_MEMBER(spm_sample_interval_unit);
+    CFG_SERIALIZE_MEMBER(spm_sample_interval_unit_value);
     CFG_SERIALIZE_MEMBER(extra_counters_contents);
     CFG_SERIALIZE_MEMBER(kernel_filter_include);
     CFG_SERIALIZE_MEMBER(kernel_filter_exclude);

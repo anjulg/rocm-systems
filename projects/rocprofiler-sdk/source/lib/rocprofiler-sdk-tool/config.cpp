@@ -274,14 +274,9 @@ config::config()
          {"stochastic", ROCPROFILER_PC_SAMPLING_METHOD_STOCHASTIC},
          {"host_trap", ROCPROFILER_PC_SAMPLING_METHOD_HOST_TRAP}};
 
-    try
-    {
-        pc_sampling_method_value = pc_sampling_method_map.at(pc_sampling_method);
-    } catch(...)
-    {
-        ROCP_FATAL << "Invalid value for ROCPROF_PC_SAMPLING_METHOD: " << pc_sampling_method << "."
-                   << "Valid choices are stochastic and host_trap\n";
-    }
+    std::unordered_map<std::string_view, rocprofiler_spm_parameter_type_t> spm_type_map = {
+        {"none", ROCPROFILER_SPM_PARAMETER_TYPE_NONE},
+        {"sclk_cycles", ROCPROFILER_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES}};
 
     if(pc_sampling_method_value == ROCPROFILER_PC_SAMPLING_METHOD_HOST_TRAP)
         pc_sampling_host_trap = true;
@@ -307,6 +302,16 @@ config::config()
                                                         std::stoull(_config_params.at(1)),
                                                         std::stoull(_config_params.at(2))});
         }
+    }
+
+    try
+    {
+        spm_sample_interval_unit_value = spm_type_map.at(spm_sample_interval_unit);
+    } catch(...)
+    {
+        ROCP_FATAL << "Invalid value for ROCPROF_SPM_SAMPLE_INTERVAL_UNIT: "
+                   << spm_sample_interval_unit << ". "
+                   << "Valid choices are: none, sclk_cycles\n";
     }
 
     // Benchmarking Enable/Disable

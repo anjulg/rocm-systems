@@ -43,6 +43,8 @@ constexpr uint32_t lds_block_size = 128 * 4;
 using counter_dimension_id_vec_t   = std::vector<rocprofiler_counter_dimension_id_t>;
 using counter_dimension_info_vec_t = std::vector<rocprofiler_counter_record_dimension_info_t>;
 
+using spm_config_vec_t            = std::vector<rocprofiler_spm_available_configuration_t>;
+using agent_spm_config_info_map_t = std::unordered_map<rocprofiler_agent_id_t, spm_config_vec_t>;
 struct tool_counter_info : rocprofiler_counter_info_v1_t
 {
     using parent_type = rocprofiler_counter_info_v1_t;
