@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -66,9 +66,7 @@ struct spm_counter_config
     const rocprofiler_agent_t*    agent = nullptr;
     std::vector<counters::Metric> metrics{};
 
-    double   sample_freq = 0.5;
-    uint64_t buffer_size = 32768;
-    uint64_t timeout     = 0;
+    std::vector<rocprofiler_spm_parameters_t> spm_parameters{};
 
     rocprofiler_counter_config_id_t id{.handle = 0};
     // A packet cache of AQL packets. This allows reuse of AQL packets (preventing costly
@@ -95,8 +93,8 @@ struct spm_counter_callback_info
     std::optional<rocprofiler_buffer_id_t> buffer;
     // Link to the internal context this is associated with
     // Internal context is used as a key to obtain external correlation id in pre kernel call
-    const context::context*                       internal_context;
-    rocprofiler_spm_dispatch_counting_record_cb_t record_callback;
+    const context::context*                       internal_context{nullptr};
+    rocprofiler_spm_dispatch_counting_record_cb_t record_callback{nullptr};
     void*                                         record_callback_args{nullptr};
     common::Synchronized<
         std::unordered_map<rocprofiler::hsa::AQLPacket*, std::shared_ptr<spm_counter_config>>>
@@ -112,7 +110,7 @@ rocprofiler_status_t
 create_spm_counter_profile(std::shared_ptr<spm_counter_config> config);
 
 rocprofiler_status_t
-destroy_spm_counter_profile(uint64_t id);
+destroy_spm_counter_profile(rocprofiler_counter_config_id_t id);
 
 std::shared_ptr<spm_counter_config>
 get_spm_counter_config(rocprofiler_counter_config_id_t id);

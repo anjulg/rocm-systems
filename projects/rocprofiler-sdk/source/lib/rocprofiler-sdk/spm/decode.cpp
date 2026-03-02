@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -35,19 +35,10 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
-
-#define CHECK_HSA(fn, message)                                                                     \
-    {                                                                                              \
-        auto _status = (fn);                                                                       \
-        if(_status != HSA_STATUS_SUCCESS)                                                          \
-        {                                                                                          \
-            ROCP_ERROR << "HSA Err: " << _status << '\n';                                          \
-            throw std::runtime_error(message);                                                     \
-        }                                                                                          \
-    }
 
 namespace rocprofiler
 {
@@ -112,7 +103,7 @@ aql_data_callback(size_t buffer_id, void* data, size_t data_size, int flags, voi
         counters.resize(count);
     }
 
-    // Intially size to 4 shaders
+    // Initially size to 4 shader engines
     for(auto& v : counters)
         v.shaders.resize(4);
 
@@ -122,11 +113,11 @@ aql_data_callback(size_t buffer_id, void* data, size_t data_size, int flags, voi
 
     if(status != HSA_STATUS_SUCCESS) return;
 
-    auto records     = std::vector<const rocprofiler_spm_counter_record_t*>{};
+    auto records     = std::vector<std::unique_ptr<rocprofiler_spm_counter_record_t>>{};
     auto buf_records = std::vector<rocprofiler_spm_counter_record_t>{};
 
     rocprofiler::buffer::instance* buf = nullptr;
-    buf                                = buffer::get_buffer(spm_packet->buffer->handle);
+    if(spm_packet->buffer) buf = buffer::get_buffer(spm_packet->buffer->handle);
 
     for(size_t i = 0; i < counters.size(); i++)
     {
@@ -161,22 +152,22 @@ aql_data_callback(size_t buffer_id, void* data, size_t data_size, int flags, voi
                         static_cast<double>(values[it])});
                 }
                 else
-
-                    // Construct SPM record and add it to the buffer
-                    records.emplace_back(new rocprofiler_spm_counter_record_t{
-                        .size        = sizeof(rocprofiler_spm_counter_record_t),
-                        .dispatch_id = spm_packet->dispatch_data.dispatch_info.dispatch_id,
-                        .id          = instance_id,
-                        .agent_id =
-                            (rocprofiler::agent::get_rocprofiler_agent(spm_packet->GetAgent()))->id,
-                        .timestamp = times[it],
-                        .value     = static_cast<double>(values[it])});
+                    records.emplace_back(std::make_unique<rocprofiler_spm_counter_record_t>(
+                        rocprofiler_spm_counter_record_t{
+                            .size        = sizeof(rocprofiler_spm_counter_record_t),
+                            .dispatch_id = spm_packet->dispatch_data.dispatch_info.dispatch_id,
+                            .id          = instance_id,
+                            .agent_id =
+                                (rocprofiler::agent::get_rocprofiler_agent(spm_packet->GetAgent()))
+                                    ->id,
+                            .timestamp = times[it],
+                            .value     = static_cast<double>(values[it])}));
             }
         }
     }
     if(buf)
     {
-        auto _lk = std::unique_lock{get_buffer_mut()};  // Buffer records need to be in order
+        auto _lk = std::unique_lock{get_buffer_mut()};
 
         buf->emplace(ROCPROFILER_BUFFER_CATEGORY_COUNTERS,
                      ROCPROFILER_COUNTER_RECORD_PROFILE_COUNTING_DISPATCH_HEADER,
@@ -187,19 +178,21 @@ aql_data_callback(size_t buffer_id, void* data, size_t data_size, int flags, voi
                 ROCPROFILER_BUFFER_CATEGORY_COUNTERS, ROCPROFILER_COUNTER_RECORD_VALUE, itr);
         }
     }
-    else
+    else if(spm_packet->record_cb)
     {
-        // Return the buffer of SPM records to the tool
-        spm_packet->record_cb(
-            &(spm_packet->dispatch_data),
-            records.data(),
-            records.size(),
-            1 << ROCPROFILER_SPM_RECORD_FLAG_DATA | flags << ROCPROFILER_SPM_RECORD_FLAG_DATA_LOST,
-            spm_packet->user_data,
-            spm_packet->record_callback_args);
-        for(const auto* itr : records)
-            delete(itr);
-        records.clear();
+        // Build raw pointer array for the callback interface
+        auto record_ptrs = std::vector<const rocprofiler_spm_counter_record_t*>{};
+        record_ptrs.reserve(records.size());
+        for(const auto& rec : records)
+            record_ptrs.push_back(rec.get());
+
+        spm_packet->record_cb(&(spm_packet->dispatch_data),
+                              record_ptrs.data(),
+                              record_ptrs.size(),
+                              (1 << ROCPROFILER_SPM_RECORD_FLAG_DATA) |
+                                  (flags << ROCPROFILER_SPM_RECORD_FLAG_DATA_LOST),
+                              spm_packet->user_data,
+                              spm_packet->record_callback_args);
     }
 }
 

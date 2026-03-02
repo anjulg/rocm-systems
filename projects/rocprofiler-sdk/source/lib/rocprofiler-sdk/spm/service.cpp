@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -37,6 +37,8 @@
 #include <glog/logging.h>
 #include <hsa/hsa_api_trace.h>
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 extern "C" {
 
@@ -55,11 +57,12 @@ rocprofiler_status_t
 rocprofiler_spm_create_counter_config(rocprofiler_agent_id_t           agent_id,
                                       rocprofiler_counter_id_t*        counters_list,
                                       size_t                           counters_count,
-                                      rocprofiler_spm_configuration_t* parameters,
+                                      rocprofiler_spm_parameters_t**   parameters,
+                                      size_t                           parameters_count,
                                       rocprofiler_counter_config_id_t* config_id)
 {
-    auto sym = rocprofiler::spm::construct_spm_interface();
-    if(!sym.has_value()) return ROCPROFILER_STATUS_ERROR_INCOMPATIBLE_ABI;
+    const auto* sym = rocprofiler::spm::construct_spm_interface();
+    if(!sym) return ROCPROFILER_STATUS_ERROR_INCOMPATIBLE_ABI;
 
     if(!rocprofiler::spm::is_spm_explicitly_enabled())
         return ROCPROFILER_STATUS_ERROR_NOT_IMPLEMENTED;
@@ -73,8 +76,6 @@ rocprofiler_spm_create_counter_config(rocprofiler_agent_id_t           agent_id,
 
     auto        metrics_map = rocprofiler::counters::loadMetrics();
     const auto& id_map      = metrics_map->id_to_metric;
-    if(config_id->handle == 0 && counters_count == 0)
-        return ROCPROFILER_STATUS_ERROR_INVALID_ARGUMENT;
     for(size_t i = 0; i < counters_count; i++)
     {
         auto& counter_id       = counters_list[i];
@@ -93,11 +94,13 @@ rocprofiler_spm_create_counter_config(rocprofiler_agent_id_t           agent_id,
         config->metrics.push_back(*metric_ptr);
     }
 
-    if(parameters)
+    for(size_t i = 0; i < parameters_count; i++)
     {
-        config->timeout     = parameters->timeout;
-        config->buffer_size = parameters->buffer_size;
-        config->sample_freq = parameters->frequency;
+        if(!parameters[i]) return ROCPROFILER_STATUS_ERROR_INVALID_ARGUMENT;
+        config->spm_parameters.emplace_back(
+            rocprofiler_spm_parameters_t{.size  = sizeof(rocprofiler_spm_parameters_t),
+                                         .type  = parameters[i]->type,
+                                         .value = parameters[i]->value});
     }
 
     if(config_id->handle != 0)
@@ -110,11 +113,6 @@ rocprofiler_spm_create_counter_config(rocprofiler_agent_id_t           agent_id,
                 if(!already_added.emplace(metric.id()).second) continue;
                 config->metrics.push_back(metric);
             }
-            if(existing->sample_freq != config->sample_freq)
-                config->sample_freq = existing->sample_freq;
-            if(existing->buffer_size != config->buffer_size)
-                config->buffer_size = existing->buffer_size;
-            if(existing->timeout != config->timeout) config->timeout = existing->timeout;
         }
     }
 
@@ -132,8 +130,7 @@ rocprofiler_spm_create_counter_config(rocprofiler_agent_id_t           agent_id,
 rocprofiler_status_t
 rocprofiler_spm_destroy_counter_config(rocprofiler_counter_config_id_t config_id)
 {
-    rocprofiler::spm::destroy_spm_counter_profile(config_id.handle);
-    return ROCPROFILER_STATUS_SUCCESS;
+    return rocprofiler::spm::destroy_spm_counter_profile(config_id);
 }
 
 rocprofiler_status_t
@@ -144,8 +141,8 @@ rocprofiler_configure_callback_spm_dispatch_service(
     rocprofiler_spm_dispatch_counting_record_cb_t  record_callback,
     void*                                          record_callback_args)
 {
-    auto sym = rocprofiler::spm::construct_spm_interface();
-    if(!sym.has_value()) return ROCPROFILER_STATUS_ERROR_INCOMPATIBLE_ABI;
+    const auto* sym = rocprofiler::spm::construct_spm_interface();
+    if(!sym) return ROCPROFILER_STATUS_ERROR_INCOMPATIBLE_ABI;
 
     if(!rocprofiler::spm::is_spm_explicitly_enabled())
         return ROCPROFILER_STATUS_ERROR_NOT_IMPLEMENTED;
@@ -166,9 +163,9 @@ rocprofiler_configure_callback_spm_dispatch_service(
 /**
  * @brief Query Agent Counters Availability.
  *
- * @param [in] agent
- * @param [out] counters_list
- * @param [out] counters_count
+ * @param [in]  agent agent for which the supported counters are queried
+ * @param [in]  callback to return available counters
+ * @param [in]  user data to be passed to the callback
  * @return ::rocprofiler_status_t
  */
 rocprofiler_status_t
@@ -202,12 +199,12 @@ rocprofiler_iterate_spm_supported_counters(rocprofiler_agent_id_t              a
  * @brief Configure buffered dispatch profile Counting Service.
  *        Collects the counters in dispatch packets and stores them
  *        in buffer_id. The buffer may contain packets from more than
- *        one dispatch (denoted by correlation id). Will trigger the
+ *        one dispatch (denoted by dispatch id). Will trigger the
  *        callback based on the parameters setup in buffer_id_t.
  *
  * @param [in] context_id context id
  * @param [in] buffer_id id of the buffer to use for the counting service
- * @param [in] profile profile config to use for dispatch
+ * @param [in] callback to be called when a kernel is dispatched
  * @return ::rocprofiler_status_t
  */
 rocprofiler_status_t
@@ -219,6 +216,12 @@ rocprofiler_configure_buffer_spm_dispatch_service(
 {
     auto* ctx_p = rocprofiler::context::get_mutable_registered_context(context_id);
     if(!ctx_p) return ROCPROFILER_STATUS_ERROR_CONTEXT_INVALID;
+
+    const auto* sym = rocprofiler::spm::construct_spm_interface();
+    if(!sym) return ROCPROFILER_STATUS_ERROR_INCOMPATIBLE_ABI;
+
+    if(!rocprofiler::spm::is_spm_explicitly_enabled())
+        return ROCPROFILER_STATUS_ERROR_NOT_IMPLEMENTED;
 
     // checking if the buffer is registered
     auto const* buff = rocprofiler::buffer::get_buffer(buffer_id);
@@ -235,15 +238,73 @@ rocprofiler_configure_buffer_spm_dispatch_service(
     auto& cb = *ctx.dispatch_spm->callbacks.emplace_back(
         std::make_shared<rocprofiler::spm::spm_counter_callback_info>());
 
-    cb.user_cb       = callback;
-    cb.callback_args = callback_data_args;
-    cb.context       = context_id;
-    if(buffer_id.handle != 0)
-    {
-        cb.buffer = buffer_id;
-    }
+    cb.user_cb          = callback;
+    cb.callback_args    = callback_data_args;
+    cb.context          = context_id;
+    cb.buffer           = buffer_id;
     cb.internal_context = ctx_p;
 
     return ROCPROFILER_STATUS_SUCCESS;
+}
+
+using spm_config_vec_t = std::vector<std::unique_ptr<rocprofiler_spm_available_configuration_t>>;
+
+rocprofiler_spm_parameter_type_t
+get_type(aqlprofile_spm_parameter_type_t src)
+{
+    switch(src)
+    {
+        case AQLPROFILE_SPM_PARAMETER_TYPE_NONE: return ROCPROFILER_SPM_PARAMETER_TYPE_NONE;
+        case AQLPROFILE_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES:
+            return ROCPROFILER_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES;
+        default: break;
+    }
+    return ROCPROFILER_SPM_PARAMETER_TYPE_NONE;
+}
+
+hsa_status_t
+query_cb(const aqlprofile_spm_available_configuration_t* config,
+         size_t                                          configs_size,
+         void*                                           userdata)
+{
+    auto& configs_supported = *reinterpret_cast<spm_config_vec_t*>(userdata);
+    for(size_t itr = 0; itr < configs_size; itr++)
+    {
+        configs_supported.emplace_back(std::make_unique<rocprofiler_spm_available_configuration_t>(
+            rocprofiler_spm_available_configuration_t{
+                .size         = sizeof(rocprofiler_spm_available_configuration_t),
+                .type         = get_type(config[itr].type),
+                .min_interval = config[itr].min_interval,
+                .max_interval = config[itr].max_interval}));
+    }
+    return HSA_STATUS_SUCCESS;
+}
+
+rocprofiler_status_t
+rocprofiler_query_spm_agent_configurations(rocprofiler_agent_id_t                        agent_id,
+                                           rocprofiler_spm_available_configurations_cb_t cb,
+                                           void*                                         user_data)
+{
+    const auto* sym = rocprofiler::spm::construct_spm_interface();
+    if(!sym) return ROCPROFILER_STATUS_ERROR_INCOMPATIBLE_ABI;
+
+    const auto* aql_agent = rocprofiler::agent::get_aql_agent(agent_id);
+    if(!aql_agent) return ROCPROFILER_STATUS_ERROR_AGENT_NOT_FOUND;
+
+    spm_config_vec_t configs_supported{};
+    auto status = sym->spm_query_agent_capabilities(*aql_agent, query_cb, &configs_supported);
+
+    if(status == HSA_STATUS_SUCCESS)
+    {
+        std::vector<const rocprofiler_spm_available_configuration_t*> config_ptrs;
+        config_ptrs.reserve(configs_supported.size());
+        for(auto& cfg : configs_supported)
+            config_ptrs.push_back(cfg.get());
+
+        cb(config_ptrs.data(), config_ptrs.size(), user_data);
+        return ROCPROFILER_STATUS_SUCCESS;
+    }
+    else
+        return ROCPROFILER_STATUS_ERROR;
 }
 }

@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -207,7 +207,8 @@ post_kernel_call(const context::context*                           ctx,
 {
     CHECK(info && ctx);
 
-    std::shared_ptr<spm_counter_config> prof_config;
+    std::shared_ptr<spm_counter_config>          prof_config;
+    std::unique_ptr<rocprofiler::hsa::AQLPacket> rel_pkt;
     // Get the Profile Config
     info->packet_return_map.wlock([&](auto& data) {
         for(auto& [aql_pkt, _] : pkts)
@@ -225,13 +226,14 @@ post_kernel_call(const context::context*                           ctx,
                     ->get_core_table()
                     .hsa_signal_destroy_fn(pkt->before_krn_barrier_pkt.at(1).dep_signal[0]);
                 pkt->kfd_stop();
-                auto rel_pkt = std::move(aql_pkt);
-                prof_config->packets.wlock(
-                    [&](auto& pkt_vector) { pkt_vector.emplace_back(std::move(rel_pkt)); });
+                rel_pkt = std::move(aql_pkt);
                 return;
             }
         }
     });
+    if(rel_pkt)
+        prof_config->packets.wlock(
+            [&](auto& pkt_vector) { pkt_vector.emplace_back(std::move(rel_pkt)); });
 }
 }  // namespace spm
 }  // namespace rocprofiler

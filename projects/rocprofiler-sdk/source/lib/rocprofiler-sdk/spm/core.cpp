@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -35,6 +35,7 @@
 #include <rocprofiler-sdk/fwd.h>
 #include <rocprofiler-sdk/intercept_table.h>
 #include <rocprofiler-sdk/rocprofiler.h>
+#include <rocprofiler-sdk/cxx/operators.hpp>
 
 #include <atomic>
 #include <cstdint>
@@ -42,16 +43,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-#define CHECK_HSA(fn, message)                                                                     \
-    {                                                                                              \
-        auto _status = (fn);                                                                       \
-        if(_status != HSA_STATUS_SUCCESS)                                                          \
-        {                                                                                          \
-            ROCP_ERROR << "HSA Err: " << _status << '\n';                                          \
-            throw std::runtime_error(message);                                                     \
-        }                                                                                          \
-    }
 
 namespace rocprofiler
 {
@@ -69,19 +60,23 @@ public:
     //       and are independent of the context.
     void spm_add_profile(std::shared_ptr<spm_counter_config>&& config);
 
-    rocprofiler_status_t spm_destroy_profile(uint64_t id);
-    // Setup the SPM counter collection service. spm_counter_callback_info is created here
+    rocprofiler_status_t spm_destroy_profile(rocprofiler_counter_config_id_t id);
 
     std::shared_ptr<spm_counter_config> get_profile_cfg(rocprofiler_counter_config_id_t id);
 
 private:
     // Cache to contain the map of config id handle to spm counter config
-    common::Synchronized<std::unordered_map<uint64_t, std::shared_ptr<spm_counter_config>>>
+    common::Synchronized<
+        std::unordered_map<rocprofiler_counter_config_id_t, std::shared_ptr<spm_counter_config>>>
         _configs;
 };
 
 SpmCounterController&
-spm_get_controller();
+spm_get_controller()
+{
+    static auto* controller = rocprofiler::common::static_object<SpmCounterController>::construct();
+    return *CHECK_NOTNULL(controller);
+}
 
 /**
  * @brief The functions checks if the `ROCPROFILER_SPM_BETA_ENABLED` is set.
@@ -115,9 +110,10 @@ void
 SpmCounterController::spm_add_profile(std::shared_ptr<spm_counter_config>&& config)
 {
     static std::atomic<uint64_t> profile_val = 1;
+
     _configs.wlock([&](auto& data) {
         config->id = rocprofiler_counter_config_id_t{.handle = profile_val};
-        data.emplace(profile_val, std::move(config));
+        data.emplace(config->id, std::move(config));
         profile_val++;
     });
 }
@@ -126,7 +122,7 @@ SpmCounterController::spm_add_profile(std::shared_ptr<spm_counter_config>&& conf
  * @brief Removes the profile entry from the global cache
  */
 rocprofiler_status_t
-SpmCounterController::spm_destroy_profile(uint64_t id)
+SpmCounterController::spm_destroy_profile(rocprofiler_counter_config_id_t id)
 {
     return _configs.wlock([&](auto& data) {
         auto itr = data.find(id);
@@ -142,22 +138,18 @@ SpmCounterController::spm_destroy_profile(uint64_t id)
 std::shared_ptr<spm_counter_config>
 SpmCounterController::get_profile_cfg(rocprofiler_counter_config_id_t id)
 {
-    std::shared_ptr<spm_counter_config> cfg;
-    _configs.rlock([&](const auto& map) { cfg = map.at(id.handle); });
+    std::shared_ptr<spm_counter_config> cfg = nullptr;
+    _configs.rlock([&](const auto& map) {
+        auto it = map.find(id);
+        if(it != map.end()) cfg = it->second;
+    });
     return cfg;
 }
 
 rocprofiler_status_t
-destroy_spm_counter_profile(uint64_t id)
+destroy_spm_counter_profile(rocprofiler_counter_config_id_t id)
 {
     return spm_get_controller().spm_destroy_profile(id);
-}
-
-SpmCounterController&
-spm_get_controller()
-{
-    static auto* controller = rocprofiler::common::static_object<SpmCounterController>::construct();
-    return *CHECK_NOTNULL(controller);
 }
 
 /**
@@ -184,9 +176,8 @@ get_spm_packet(const std::shared_ptr<spm_counter_callback_info>& info,
         ret_pkt = rocprofiler::aql::spm_construct_packet(
             profile->agent->id,
             std::vector<counters::Metric>{profile->metrics.begin(), profile->metrics.end()},
-            profile->sample_freq,
-            profile->buffer_size,
-            profile->timeout);
+            std::vector<rocprofiler_spm_parameters_t>{profile->spm_parameters.begin(),
+                                                      profile->spm_parameters.end()});
     };
 
     ret_pkt->clear();
@@ -230,7 +221,6 @@ get_spm_counter_config(rocprofiler_counter_config_id_t id)
  * Checks for conflicting services
  * Instantiates spm_dispatch_counter_collection_service
  */
-
 rocprofiler_status_t
 configure_callback_spm_dispatch(rocprofiler_context_id_t                       context_id,
                                 rocprofiler_spm_dispatch_counting_service_cb_t callback,
@@ -344,6 +334,11 @@ stop_context(const context::context* ctx)
     });
 
     if(controller) controller->disable_serialization();
+    for(auto& cb : ctx->dispatch_spm->callbacks)
+    {
+        if(cb->queue_id != rocprofiler::hsa::ClientID{-1})
+            controller->remove_callback(cb->queue_id);
+    }
 }
 
 }  // namespace spm
