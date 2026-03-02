@@ -252,10 +252,8 @@ SPMMemoryPool::SPMMemoryPool(const AgentCache& agent, const AmdExtTable& ext, co
     fill_fn         = ext.hsa_amd_memory_fill_fn;
     api_copy_fn     = copy_fn;
 
-    gpu_agent     = agent.get_hsa_agent();
-    cpu_pool_     = agent.cpu_pool();
-    gpu_pool_     = agent.gpu_pool();
-    kernarg_pool_ = agent.kernarg_pool();
+    gpu_agent = agent.get_hsa_agent();
+    cpu_pool_ = agent.cpu_pool();
 }
 
 void
@@ -293,24 +291,12 @@ SPMMemoryPool::Alloc(void** ptr, size_t size, aqlprofile_buffer_desc_flags_t fla
     if(!data) return HSA_STATUS_ERROR;
 
     auto& pool = *reinterpret_cast<SPMMemoryPool*>(data);
-    if(!pool.allocate_fn || !pool.free_fn || !pool.allow_access_fn || !pool.fill_fn)
+    if(!flags.host_access || !pool.allocate_fn || !pool.free_fn || !pool.allow_access_fn ||
+       !pool.fill_fn)
         return HSA_STATUS_ERROR;
 
-    if(flags.host_access)
-        status = pool.allocate_fn(pool.cpu_pool_, size, hsa_amd_memory_pool_executable_flag, ptr);
-    else
-        status =
-            pool.allocate_fn(pool.kernarg_pool_, size, hsa_amd_memory_pool_executable_flag, ptr);
+    status = pool.allocate_fn(pool.cpu_pool_, size, hsa_amd_memory_pool_executable_flag, ptr);
 
-    if(status == HSA_STATUS_SUCCESS)
-        status = pool.allow_access_fn(1, &pool.gpu_agent, nullptr, *ptr);
-    if(status == HSA_STATUS_SUCCESS)
-        status = pool.fill_fn(*ptr, 0u, (size + sizeof(uint32_t) - 1) / sizeof(uint32_t));
-    if(status != HSA_STATUS_SUCCESS && *ptr)
-    {
-        pool.free_fn(*ptr);
-        *ptr = nullptr;
-    }
     return status;
 }
 
