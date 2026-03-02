@@ -163,9 +163,9 @@ rocprofiler_configure_callback_spm_dispatch_service(
 /**
  * @brief Query Agent Counters Availability.
  *
- * @param [in]  agent agent for which the supported counters are queried
+ * @param [in]  agent_id agent for which the supported counters are queried
  * @param [in]  callback to return available counters
- * @param [in]  user data to be passed to the callback
+ * @param [in]  user_data data to be passed to the callback
  * @return ::rocprofiler_status_t
  */
 rocprofiler_status_t
@@ -202,9 +202,10 @@ rocprofiler_iterate_spm_supported_counters(rocprofiler_agent_id_t              a
  *        one dispatch (denoted by dispatch id). Will trigger the
  *        callback based on the parameters setup in buffer_id_t.
  *
- * @param [in] context_id context id
- * @param [in] buffer_id id of the buffer to use for the counting service
- * @param [in] callback to be called when a kernel is dispatched
+ * @param [in] context_id context to configure spm buffer service
+ * @param [in] buffer_id buffer to use for the counting service
+ * @param [in] callback  callback to be invoked when a kernel is dispatched
+ * @param [in] callback_data_args  callback data passed to the callback
  * @return ::rocprofiler_status_t
  */
 rocprofiler_status_t
@@ -257,7 +258,7 @@ get_type(aqlprofile_spm_parameter_type_t src)
         case AQLPROFILE_SPM_PARAMETER_TYPE_NONE: return ROCPROFILER_SPM_PARAMETER_TYPE_NONE;
         case AQLPROFILE_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES:
             return ROCPROFILER_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES;
-        default: break;
+        default: return ROCPROFILER_SPM_PARAMETER_TYPE_NONE;
     }
     return ROCPROFILER_SPM_PARAMETER_TYPE_NONE;
 }
@@ -272,10 +273,10 @@ query_cb(const aqlprofile_spm_available_configuration_t* config,
     {
         configs_supported.emplace_back(std::make_unique<rocprofiler_spm_available_configuration_t>(
             rocprofiler_spm_available_configuration_t{
-                .size         = sizeof(rocprofiler_spm_available_configuration_t),
-                .type         = get_type(config[itr].type),
-                .min_interval = config[itr].min_interval,
-                .max_interval = config[itr].max_interval}));
+                .size     = sizeof(rocprofiler_spm_available_configuration_t),
+                .type     = get_type(config[itr].type),
+                .interval = {.min_interval = config[itr].min_interval,
+                             .max_interval = config[itr].max_interval}}));
     }
     return HSA_STATUS_SUCCESS;
 }

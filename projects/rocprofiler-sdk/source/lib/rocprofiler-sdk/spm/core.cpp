@@ -109,7 +109,7 @@ is_spm_explicitly_enabled()
 void
 SpmCounterController::spm_add_profile(std::shared_ptr<spm_counter_config>&& config)
 {
-    static std::atomic<uint64_t> profile_val = 1;
+    static uint64_t profile_val = 1;
 
     _configs.wlock([&](auto& data) {
         config->id = rocprofiler_counter_config_id_t{.handle = profile_val};
