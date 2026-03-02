@@ -1058,28 +1058,26 @@ write_rocpd(
                 auto _block       = sanitize_sql_string(aitr.block);
                 auto _expression  = sanitize_sql_string(aitr.expression);
 
-                auto stmt = get_insert_statement(
-                    "rocpd_info_pmc{{uuid}}",
-                    {
-                        insert_value("id", aitr.id.handle),
-                        insert_value("nid", node_id),
-                        insert_value("pid", this_pid),
-                        insert_value("target_arch", std::string_view{"GPU"}),
-                        insert_value("agent_id", agent->node_id),
-                        insert_value("name", _name, allow_empty_string{}),
-                        insert_value("symbol", _name, allow_empty_string{}),
-                        insert_value("description", _description, allow_empty_string{}),
-                        insert_value("component", std::string_view{"rocm"}),
-                        insert_value("value_type", std::string_view{"ABS"}),
-                        insert_value("block", _block, allow_empty_string{}),
-                        insert_value("expression", _expression, allow_empty_string{}),
-                        insert_value("is_constant", aitr.is_constant),
-                        insert_value("is_derived", aitr.is_derived),
-                        insert_value("spm_support", aitr.spm_support),
-                        insert_value("extdata", json_data),
-                    });
-
-                execute_raw_sql_statements(conn, stmt);
+                insert_row(db,
+                           "rocpd_info_pmc{{uuid}}",
+                           {
+                               insert_value("id", aitr.id.handle),
+                               insert_value("nid", node_id),
+                               insert_value("pid", this_pid),
+                               insert_value("target_arch", std::string_view{"GPU"}),
+                               insert_value("agent_id", agent->node_id),
+                               insert_value("name", _name, allow_empty_string{}),
+                               insert_value("symbol", _name, allow_empty_string{}),
+                               insert_value("description", _description, allow_empty_string{}),
+                               insert_value("component", std::string_view{"rocm"}),
+                               insert_value("value_type", std::string_view{"ABS"}),
+                               insert_value("block", _block, allow_empty_string{}),
+                               insert_value("expression", _expression, allow_empty_string{}),
+                               insert_value("is_constant", aitr.is_constant),
+                               insert_value("is_derived", aitr.is_derived),
+                               insert_value("spm_support", aitr.spm_support),
+                               insert_value("extdata", json_data),
+                           });
             }
         }
     };
@@ -1212,7 +1210,6 @@ write_rocpd(
 
             for(auto pctr : spm_collection_gen)
             {
-                auto _deferred = sql::deferred_transaction{conn};
                 for(const auto& record : spm_collection_gen.get(pctr))
                 {
                     const auto& dispatch_data = record.dispatch_data;
@@ -1273,15 +1270,15 @@ write_rocpd(
         }
     };
 
-    auto insert_pmc_event_data = [&conn,
+    auto insert_pmc_event_data = [&db,
                                   &tool_metadata,
                                   &counter_collection_gen,
                                   &spm_collection_gen](auto& dispatch_evt_ids) {
         auto   _sqlgenperf_rocpd = get_simple_timer("rocpd_pmc_event");
+        auto   _deferred         = sql::deferred_transaction{db.conn};
         size_t idx               = tool_metadata.pmc_event_offset;
         for(auto ditr : counter_collection_gen)
         {
-            auto _deferred = sql::deferred_transaction{conn};
             for(const auto& record : counter_collection_gen.get(ditr))
             {
                 const auto& info        = record.dispatch_data.dispatch_info;
@@ -1290,21 +1287,20 @@ write_rocpd(
                 auto evt_id = dispatch_evt_ids.at(dispatch_id);
                 for(const auto& count : record.read())
                 {
-                    auto stmt = get_insert_statement("rocpd_pmc_event{{uuid}}",
-                                                     {
-                                                         insert_value("id", idx++),
-                                                         insert_value("event_id", evt_id),
-                                                         insert_value("pmc_id", count.id.handle),
-                                                         insert_value("value", count.value),
-                                                     });
-
-                    execute_raw_sql_statements(conn, stmt);
+                    insert_row(db,
+                               "rocpd_pmc_event{{uuid}}",
+                               {
+                                   insert_value("id", idx++),
+                                   insert_value("event_id", evt_id),
+                                   insert_value("pmc_id", count.id.handle),
+                                   insert_value("value", count.value),
+                               });
                 }
             }
         }
+
         for(auto ditr : spm_collection_gen)
         {
-            auto _deferred = sql::deferred_transaction{conn};
             for(const auto& record : spm_collection_gen.get(ditr))
             {
                 const auto& info        = record.dispatch_data.dispatch_info;
@@ -1313,16 +1309,15 @@ write_rocpd(
                 auto evt_id = dispatch_evt_ids.at(dispatch_id);
                 for(const auto& count : record.read())
                 {
-                    auto stmt = get_insert_statement("rocpd_pmc_event{{uuid}}",
-                                                     {
-                                                         insert_value("id", idx++),
-                                                         insert_value("event_id", evt_id),
-                                                         insert_value("pmc_id", count.id.handle),
-                                                         insert_value("value", count.value),
-                                                         insert_value("timestamp", count.timestamp),
-                                                     });
-
-                    execute_raw_sql_statements(conn, stmt);
+                    insert_row(db,
+                               "rocpd_pmc_event{{uuid}}",
+                               {
+                                   insert_value("id", idx++),
+                                   insert_value("event_id", evt_id),
+                                   insert_value("pmc_id", count.id.handle),
+                                   insert_value("value", count.value),
+                                   insert_value("timestamp", count.timestamp),
+                               });
                 }
             }
         }

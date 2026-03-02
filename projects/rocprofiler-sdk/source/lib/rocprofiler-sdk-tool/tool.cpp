@@ -1799,8 +1799,9 @@ if_spm_config_match(rocprofiler_agent_id_t           agent_id,
     {
         for(auto config : spm_config)
         {
-            if(config.type == spm_sample_unit && config.min_interval <= spm_sample_interval &&
-               config.max_interval >= spm_sample_interval)
+            if(config.type == spm_sample_unit &&
+               config.interval.min_interval <= spm_sample_interval &&
+               config.interval.max_interval >= spm_sample_interval)
                 return true;
         }
     }
