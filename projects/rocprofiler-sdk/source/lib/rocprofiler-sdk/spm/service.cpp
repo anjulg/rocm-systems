@@ -96,11 +96,10 @@ rocprofiler_spm_create_counter_config(rocprofiler_agent_id_t           agent_id,
 
     for(size_t i = 0; i < parameters_count; i++)
     {
-        if(!parameters[i]) return ROCPROFILER_STATUS_ERROR_INVALID_ARGUMENT;
         config->spm_parameters.emplace_back(
             rocprofiler_spm_parameters_t{.size  = sizeof(rocprofiler_spm_parameters_t),
-                                         .type  = parameters[i]->type,
-                                         .value = parameters[i]->value});
+                                         .type  = CHECK_NOTNULL(parameters[i])->type,
+                                         .value = CHECK_NOTNULL(parameters[i])->value});
     }
 
     if(config_id->handle != 0)
@@ -147,9 +146,6 @@ rocprofiler_configure_callback_spm_dispatch_service(
     if(!rocprofiler::spm::is_spm_explicitly_enabled())
         return ROCPROFILER_STATUS_ERROR_NOT_IMPLEMENTED;
 
-    if(rocprofiler::registration::get_init_status() > -1)
-        return ROCPROFILER_STATUS_ERROR_CONFIGURATION_LOCKED;
-
     auto* ctx = rocprofiler::context::get_mutable_registered_context(context_id);
     if(!ctx) return ROCPROFILER_STATUS_ERROR_CONTEXT_INVALID;
 
@@ -175,6 +171,9 @@ rocprofiler_iterate_spm_supported_counters(rocprofiler_agent_id_t              a
 {
     const auto* agent = rocprofiler::agent::get_agent(agent_id);
     if(!agent) return ROCPROFILER_STATUS_ERROR_AGENT_NOT_FOUND;
+
+    const auto* sym = rocprofiler::spm::construct_spm_interface();
+    if(!sym) return ROCPROFILER_STATUS_ERROR_INCOMPATIBLE_ABI;
 
     auto metrics = rocprofiler::counters::getMetricsForAgent(agent);
 

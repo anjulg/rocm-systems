@@ -176,8 +176,7 @@ get_spm_packet(const std::shared_ptr<spm_counter_callback_info>& info,
         ret_pkt = rocprofiler::aql::spm_construct_packet(
             profile->agent->id,
             std::vector<counters::Metric>{profile->metrics.begin(), profile->metrics.end()},
-            std::vector<rocprofiler_spm_parameters_t>{profile->spm_parameters.begin(),
-                                                      profile->spm_parameters.end()});
+            profile->spm_parameters);
     };
 
     ret_pkt->clear();
@@ -237,7 +236,7 @@ configure_callback_spm_dispatch(rocprofiler_context_id_t                       c
     // cannot coexist in the same context for now.
     if(ctx.pc_sampler) return ROCPROFILER_STATUS_ERROR_CONTEXT_CONFLICT;
     if(ctx.counter_collection) return ROCPROFILER_STATUS_ERROR_CONTEXT_CONFLICT;
-    if(ctx.device_counter_collection) return ROCPROFILER_STATUS_ERROR_AGENT_DISPATCH_CONFLICT;
+    if(ctx.device_counter_collection) return ROCPROFILER_STATUS_ERROR_CONTEXT_CONFLICT;
     if(!ctx.dispatch_spm)
         ctx.dispatch_spm =
             std::make_unique<rocprofiler::context::spm_dispatch_counter_collection_service>();
