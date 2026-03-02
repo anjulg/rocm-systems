@@ -128,9 +128,9 @@ private:
 };
 
 std::unique_ptr<hsa::SPMPacket>
-spm_construct_packet(const rocprofiler_agent_id_t              agent_id,
-                     const std::vector<counters::Metric>&      metrics,
-                     std::vector<rocprofiler_spm_parameters_t> spm_parameters);
+spm_construct_packet(const rocprofiler_agent_id_t                     agent_id,
+                     const std::vector<counters::Metric>&             metrics,
+                     const std::vector<rocprofiler_spm_parameters_t>& spm_parameters);
 
 rocprofiler_status_t
 spm_can_collect(const rocprofiler_agent_id_t         agent_id,

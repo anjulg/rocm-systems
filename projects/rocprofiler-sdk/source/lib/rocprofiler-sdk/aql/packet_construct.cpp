@@ -289,9 +289,9 @@ CounterPacketConstruct::can_collect()
  * Writes into ID map and spm descriptor used to decode SPM data
  */
 std::unique_ptr<hsa::SPMPacket>
-spm_construct_packet(const rocprofiler_agent_id_t              agent_id,
-                     const std::vector<counters::Metric>&      metrics,
-                     std::vector<rocprofiler_spm_parameters_t> spm_parameters)
+spm_construct_packet(const rocprofiler_agent_id_t                     agent_id,
+                     const std::vector<counters::Metric>&             metrics,
+                     const std::vector<rocprofiler_spm_parameters_t>& spm_parameters)
 {
     auto events = std::vector<aqlprofile_pmc_event_t>{};
     auto params = std::vector<aqlprofile_spm_parameter_t>{};

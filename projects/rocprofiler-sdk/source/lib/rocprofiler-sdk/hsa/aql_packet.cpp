@@ -300,12 +300,12 @@ SPMMemoryPool::Alloc(void** ptr, size_t size, aqlprofile_buffer_desc_flags_t fla
     return status;
 }
 
-SPMPacket::SPMPacket(aqlprofile_agent_handle_t               aql_agent,
-                     std::shared_ptr<SPMMemoryPool>          _pool,
-                     std::vector<aqlprofile_pmc_event_t>     events,
-                     std::vector<aqlprofile_spm_parameter_t> params)
+SPMPacket::SPMPacket(aqlprofile_agent_handle_t                aql_agent,
+                     std::shared_ptr<SPMMemoryPool>           _pool,
+                     std::vector<aqlprofile_pmc_event_t>&     events,
+                     std::vector<aqlprofile_spm_parameter_t>& params)
 : agent(aql_agent)
-, pool(_pool)
+, pool(std::move(_pool))
 , aql_events(std::move(events))
 , aql_params(std::move(params))
 {

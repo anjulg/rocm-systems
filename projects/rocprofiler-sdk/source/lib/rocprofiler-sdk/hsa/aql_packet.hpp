@@ -279,10 +279,10 @@ struct SPMMemoryPool
 class SPMPacket : public AQLPacket
 {
 public:
-    SPMPacket(aqlprofile_agent_handle_t               aql_agent,
-              std::shared_ptr<SPMMemoryPool>          _pool,
-              std::vector<aqlprofile_pmc_event_t>     events,
-              std::vector<aqlprofile_spm_parameter_t> params);
+    SPMPacket(aqlprofile_agent_handle_t                aql_agent,
+              std::shared_ptr<SPMMemoryPool>           _pool,
+              std::vector<aqlprofile_pmc_event_t>&     events,
+              std::vector<aqlprofile_spm_parameter_t>& params);
 
     ~SPMPacket() override;
     SPMPacket& operator=(const SPMPacket&) = delete;
