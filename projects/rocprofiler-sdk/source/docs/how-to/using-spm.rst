@@ -49,9 +49,9 @@ Use the following command to use SPM:
 
 .. code-block:: bash
 
-  rocprofv3 --spm-beta-enabled --spm SQ_WAVES --spm-timeout 10 --spm-frequency 0.5 --spm-buffer-size 32768 -- <application_path>
+rocprofv3 --spm-beta-enabled --spm SQ_WAVES -spm-sample-interval-unit sclk_cycles --spm-sample-interval 1200  --output-format json -- <application_path>
 
-The preceding command enables SPM for SQ_WAVES and a timeout of 10ms with a buffer size of 32768KB and spm frequency of 0.5GHZ. Replace ``<application_path>`` with the path to the application you want to profile.
+The preceding command enables SPM for SQ_WAVES and sample interval with unit as sclk cycle counts. Replace ``<application_path>`` with the path to the application you want to profile.
 This generates results.db file prefixed with the process ID.
 
 .. code-block:: bash
@@ -75,7 +75,7 @@ Input parameters
 Here are the input parameters used to configure SPM
 
   - ``Metrics List``:  The list of counters that you want to sample with SPM.  
-  - ``SPM Sample Interval``:  Number of clock cycles interval for sampling.
+  - ``SPM Sample Interval``:  Specifies the sampling interval for SPM counter collection. It is used with spm-sample-interval-unit to define how frequently counters are sampled.
   - ``SPM Sample Interval Unit``: Specifies the unit for the SPM sample interval. Used with --spm-sample-interval to define the sampling interval.
 
 .. code-block:: bash
