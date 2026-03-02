@@ -288,6 +288,8 @@ SPMMemoryPool::Alloc(void** ptr, size_t size, aqlprofile_buffer_desc_flags_t fla
         if(ptr != nullptr) *ptr = nullptr;
         return HSA_STATUS_SUCCESS;
     }
+
+    if(!ptr) return HSA_STATUS_ERROR;
     if(!data) return HSA_STATUS_ERROR;
 
     auto& pool = *reinterpret_cast<SPMMemoryPool*>(data);
@@ -301,24 +303,50 @@ SPMMemoryPool::Alloc(void** ptr, size_t size, aqlprofile_buffer_desc_flags_t fla
 
     if(status == HSA_STATUS_SUCCESS)
         status = pool.allow_access_fn(1, &pool.gpu_agent, nullptr, *ptr);
-    if(status == HSA_STATUS_SUCCESS) status = pool.fill_fn(*ptr, 0u, size / sizeof(uint32_t));
-
+    if(status == HSA_STATUS_SUCCESS)
+        status = pool.fill_fn(*ptr, 0u, (size + sizeof(uint32_t) - 1) / sizeof(uint32_t));
+    if(status != HSA_STATUS_SUCCESS && *ptr)
+    {
+        pool.free_fn(*ptr);
+        *ptr = nullptr;
+    }
     return status;
 }
 
-SPMPacket::SPMPacket(aqlprofile_agent_handle_t aql_agent, aqlprofile_spm_profile_t profile)
+SPMPacket::SPMPacket(aqlprofile_agent_handle_t               aql_agent,
+                     std::shared_ptr<SPMMemoryPool>          _pool,
+                     std::vector<aqlprofile_pmc_event_t>     events,
+                     std::vector<aqlprofile_spm_parameter_t> params)
 : agent(aql_agent)
+, pool(_pool)
+, aql_events(std::move(events))
+, aql_params(std::move(params))
 {
     sym = rocprofiler::spm::construct_spm_interface();
-    if(!sym.has_value()) return;
-    auto status = sym->spm_create_packets(&handle, &aql_desc, &packets, profile, 0);
+    if(!sym) return;
 
-    if(status == HSA_STATUS_ERROR_INVALID_AGENT) return;
+    aqlprofile_spm_profile_t profile{.aql_agent       = aql_agent,
+                                     .hsa_agent       = pool->gpu_agent,
+                                     .events          = aql_events.data(),
+                                     .event_count     = aql_events.size(),
+                                     .parameters      = aql_params.data(),
+                                     .parameter_count = aql_params.size(),
+                                     .reserved        = 0,
+                                     .alloc_cb        = &(hsa::SPMMemoryPool::Alloc),
+                                     .dealloc_cb      = &(hsa::SPMMemoryPool::Free),
+                                     .memcpy_cb       = &(hsa::SPMMemoryPool::Copy),
+                                     .userdata        = pool.get()};
+
+    auto status = sym->spm_create_packets(&handle, &aql_desc, &packets, profile, 0);
+    if(status != HSA_STATUS_SUCCESS) return;
 
     packets.start_packet.header            = VENDOR_BIT | BARRIER_BIT;
     packets.stop_packet.header             = VENDOR_BIT | BARRIER_BIT;
     packets.start_packet.completion_signal = hsa_signal_t{.handle = 0};
     packets.stop_packet.completion_signal  = hsa_signal_t{.handle = 0};
+
+    pool->delete_packets_fn = sym->spm_delete_packets;
+    pool->handle            = handle;
 
     status =
         sym->spm_decode_query(aql_desc, AQLPROFILE_SPM_DECODE_QUERY_SEG_SIZE, &spm_desc.seg_size);
@@ -375,7 +403,7 @@ SPMPacket::kfd_stop()
 
 SPMPacket::~SPMPacket()
 {
-    if(running.exchange(false) && sym.has_value()) sym->spm_stop(this->handle);
+    if(running.exchange(false) && sym) sym->spm_stop(this->handle);
 }
 }  // namespace hsa
 }  // namespace rocprofiler

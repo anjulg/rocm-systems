@@ -280,22 +280,14 @@ class SPMPacket : public AQLPacket
     friend class rocprofiler::aql::SPMPacketConstruct;
 
 public:
-    SPMPacket(aqlprofile_agent_handle_t aql_agent, aqlprofile_spm_profile_t profile);
-    ~SPMPacket() override;
+    SPMPacket(aqlprofile_agent_handle_t               aql_agent,
+              std::shared_ptr<SPMMemoryPool>          _pool,
+              std::vector<aqlprofile_pmc_event_t>     events,
+              std::vector<aqlprofile_spm_parameter_t> params);
 
-    explicit SPMPacket(const SPMPacket& other)
-    : agent(other.agent)
-    , sym(other.sym)
-    {
-        packets             = other.packets;
-        is_valid            = other.is_valid;
-        handle              = other.handle;
-        empty               = other.empty;
-        pool                = other.pool;
-        aql_desc            = other.aql_desc;
-        spm_desc            = other.spm_desc;
-        container_desc_data = other.container_desc_data;
-    }
+    ~SPMPacket() override;
+    SPMPacket& operator=(const SPMPacket&) = delete;
+    SPMPacket(const SPMPacket&)            = delete;
 
     void        kfd_start();
     void        kfd_stop();
@@ -314,7 +306,9 @@ public:
     void                                             populate_before() override;
     void                                             populate_after() override;
     bool                                             valid() const { return is_valid; }
-    std::optional<spm::spm_interface>                sym{};
+    const spm::spm_interface*                        sym = nullptr;
+    std::vector<aqlprofile_pmc_event_t>              aql_events{};
+    std::vector<aqlprofile_spm_parameter_t>          aql_params{};
 
 private:
     std::atomic<bool> running{false};

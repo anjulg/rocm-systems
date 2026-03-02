@@ -289,11 +289,9 @@ CounterPacketConstruct::can_collect()
  * Writes into ID map and spm descriptor used to decode SPM data
  */
 std::unique_ptr<hsa::SPMPacket>
-spm_construct_packet(const rocprofiler_agent_id_t         agent_id,
-                     const std::vector<counters::Metric>& metrics,
-                     double                               sample_freq,
-                     uint64_t                             buffer_size,
-                     uint64_t                             timeout)
+spm_construct_packet(const rocprofiler_agent_id_t              agent_id,
+                     const std::vector<counters::Metric>&      metrics,
+                     std::vector<rocprofiler_spm_parameters_t> spm_parameters)
 {
     auto events = std::vector<aqlprofile_pmc_event_t>{};
     auto params = std::vector<aqlprofile_spm_parameter_t>{};
@@ -305,12 +303,19 @@ spm_construct_packet(const rocprofiler_agent_id_t         agent_id,
         *aql_cache, *hsa::get_amd_ext_table(), hsa::get_core_table()->hsa_memory_copy_fn);
     const auto* aql_agent = rocprofiler::agent::get_aql_agent(agent->id);
 
-    const double sclk_freq   = agent->max_engine_clk_fcompute * 1E9;  // GHz
-    const size_t sclk_period = static_cast<size_t>(std::roundf(sclk_freq / ((sample_freq) *1E9)));
-
-    params.push_back({AQLPROFILE_SPM_PARAMETER_TYPE_BUFFER_SIZE, buffer_size * 1024});
-    params.push_back({AQLPROFILE_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL, sclk_period});
-    params.push_back({AQLPROFILE_SPM_PARAMETER_TYPE_TIMEOUT, timeout});
+    for(auto param : spm_parameters)
+    {
+        switch(param.type)
+        {
+            case ROCPROFILER_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES:
+                params.push_back(
+                    {AQLPROFILE_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES, param.value});
+                params.push_back({AQLPROFILE_SPM_PARAMETER_TYPE_SAMPLE_MODE,
+                                  AQLPROFILE_SPM_PARAMETER_SAMPLE_MODE_SCLK});
+                break;
+            default: break;
+        }
+    }
 
     for(const auto& metric : metrics)
     {
@@ -330,24 +335,8 @@ spm_construct_packet(const rocprofiler_agent_id_t         agent_id,
         }
     }
 
-    aqlprofile_spm_profile_t profile{.aql_agent       = *aql_agent,
-                                     .hsa_agent       = pool->gpu_agent,
-                                     .events          = events.data(),
-                                     .event_count     = events.size(),
-                                     .parameters      = params.data(),
-                                     .parameter_count = params.size(),
-                                     .reserved        = 0,
-                                     .alloc_cb        = &(hsa::SPMMemoryPool::Alloc),
-                                     .dealloc_cb      = &(hsa::SPMMemoryPool::Free),
-                                     .memcpy_cb       = &(hsa::SPMMemoryPool::Copy),
-                                     .userdata        = pool.get()};
-
-    auto pkt = std::make_unique<hsa::SPMPacket>(*aql_agent, profile);
+    auto pkt = std::make_unique<hsa::SPMPacket>(*aql_agent, std::move(pool), events, params);
     ROCP_FATAL_IF(!pkt->valid()) << "SPM Packet creation failed";
-
-    pool->delete_packets_fn = pkt->sym->spm_delete_packets;
-    pool->handle            = pkt->handle;
-    pkt->pool               = std::move(pool);
 
     pkt->spm_desc.size =
         sizeof(spm::spm_desc_v0_t) + id_map.size() * sizeof(id_map[0]) + pkt->aql_desc.size;
@@ -364,7 +353,6 @@ spm_construct_packet(const rocprofiler_agent_id_t         agent_id,
     std::memcpy(desc->aqlprofile_desc(), pkt->aql_desc.data, pkt->aql_desc.size);
     std::memcpy(desc->events(), id_map.data(), id_map.size() * sizeof(id_map[0]));
 
-    pkt->clear();
     return pkt;
 }
 
