@@ -665,7 +665,7 @@ set_external_correlation_id(rocprofiler_thread_id_t                            t
 
 void
 spm_dispatch_callback(const rocprofiler_spm_dispatch_counting_service_data_t* dispatch_data,
-                      rocprofiler_counter_config_id_t*                    config,
+                      rocprofiler_counter_config_id_t*                        config,
                       rocprofiler_user_data_t* /* user_data*/,
                       void* /*callback_data_args*/)
 {
@@ -744,17 +744,20 @@ spm_dispatch_callback(const rocprofiler_spm_dispatch_counting_service_data_t* di
         }
     }
 
-    auto params        = rocprofiler_spm_configuration_t{};
-    params.timeout     = 0;
-    params.buffer_size = 32768;
-    params.frequency   = 0.1;
+    std::vector<rocprofiler_spm_parameters_t*> input_params{};
+    auto                                       param = rocprofiler_spm_parameters_t{
+        .size = sizeof(rocprofiler_spm_parameters_t),
+        .type = ROCPROFILER_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES,
+        .value = 4200};
+    input_params.push_back(&param);
     // Look for the counters contained in counters_to_collect in gpu_counters
     // Create a colleciton profile for the counters
     rocprofiler_counter_config_id_t profile = {.handle = 0};
     ROCPROFILER_CALL(rocprofiler_spm_create_counter_config(dispatch_data->dispatch_info.agent_id,
                                                            collect_counters.data(),
                                                            collect_counters.size(),
-                                                           &params,
+                                                           input_params.data(),
+                                                           input_params.size(),
                                                            &profile),
                      "Could not construct profile cfg");
 
@@ -772,10 +775,10 @@ spm_data_callback(const rocprofiler_spm_dispatch_counting_service_data_t* dispat
                   void* /* record_callback_args*/)
 {
     static std::shared_mutex m_mutex = {};
-    auto                     lk      = std::shared_lock{m_mutex};
+    auto                     lk      = std::unique_lock{m_mutex};
     if(record_count == 0) return;
 
-    if(flags >> ROCPROFILER_SPM_RECORD_FLAG_DATA)
+    if(((flags >> ROCPROFILER_SPM_RECORD_FLAG_DATA) & 0x01) != 0)
     {
         for(size_t count = 0; count < record_count; count++)
         {

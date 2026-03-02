@@ -161,15 +161,18 @@ Profile Setup
 .. code-block:: cpp
     
     rocprofiler_counter_config_id_t profile = {.handle = 0};
-    auto                                params  = rocprofiler_spm_configuration_t{};
-    params.frequency                            = 1.0;
-    params.buffer_size                          = 32768;
-    params.timeout                              = 15;
+    
+    std::vector<rocprofiler_spm_parameters_t*> input_params{};
+    auto                                       param = rocprofiler_spm_parameters_t{
+        .size = sizeof(rocprofiler_spm_parameters_t),
+        .type = ROCPROFILER_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES,
+        .value = 4200};
+    input_params.push_back(&param);
     
     // Create and return the profile
     rocprofiler_counter_config_id_t profile;
     ROCPROFILER_CALL(rocprofiler_spm_create_counter_config(
-                         agent, counters_array, counters_array_count, &params, &profile),
+                         agent, counters_array, counters_array_count, input_params.data(), input_params.size(), &profile),
                      "Could not construct profile cfg");
 
 Dispatch Counting Callback

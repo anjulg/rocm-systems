@@ -75,13 +75,12 @@ Input parameters
 Here are the input parameters used to configure SPM
 
   - ``Metrics List``:  The list of counters that you want to sample with SPM.  
-  - ``Timeout in ms``:  The buffer that collects the sample is flushed when it is either full or when timeout is exceeded.  Default set to 0 ms.  
-  - ``SPM Frequency in GHz``: This is the frequency at which counters are sampled (the frequency is approximately converted to number of shader clocks internally). Default set to 0.5 GHz. 
-  - ``Buffer Size in KB``: size of the buffer that collects the samples.  Default set to 32768 KB.
+  - ``SPM Sample Interval``:  Number of clock cycles interval for sampling.
+  - ``SPM Sample Interval Unit``: Specifies the unit for the SPM sample interval. Used with --spm-sample-interval to define the sampling interval.
 
 .. code-block:: bash
 
-  rocprofv3 --spm-beta-enabled --spm SQ_WAVES --spm-timeout 10 --spm-frequency 0.2 --spm-buffer-size 32768  --output-format json -- <application_path>
+  rocprofv3 --spm-beta-enabled --spm SQ_WAVES -spm-sample-interval-unit sclk_cycles --spm-sample-interval 1200  --output-format json -- <application_path>
 
 The preceding command generates a JSON file with the comprehensive output.
 

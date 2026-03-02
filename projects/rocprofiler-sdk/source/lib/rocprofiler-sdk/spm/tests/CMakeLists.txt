@@ -34,7 +34,7 @@ target_link_libraries(
 rocprofiler_add_unit_test(
     TARGET spm-counter-test
     SOURCES ${ROCPROFILER_LIB_SPM_COUNTER_TEST_SOURCES}
-    TIMEOUT 45
+    TIMEOUT 60
     ENVIRONMENT
         "ROCPROFILER_METRICS_PATH=${_ROCPROFILER_SHARE_DIR}"
         "ROCPROFILER_SPM_BETA_ENABLED=True"

@@ -20,54 +20,22 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include "client.hpp"
+#include "common.hpp"
 
-#include <rocprofiler-sdk/experimental/spm.h>
 #include <rocprofiler-sdk/registration.h>
-#include <rocprofiler-sdk/rocprofiler.h>
 
 #include <cstdint>
 #include <fstream>
 #include <functional>
 #include <iostream>
 #include <mutex>
-#include <set>
 #include <shared_mutex>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
 
-#define ROCPROFILER_CALL(result, msg)                                                              \
-    {                                                                                              \
-        rocprofiler_status_t CHECKSTATUS = result;                                                 \
-        if(CHECKSTATUS != ROCPROFILER_STATUS_SUCCESS)                                              \
-        {                                                                                          \
-            std::string status_msg = rocprofiler_get_status_string(CHECKSTATUS);                   \
-            std::cerr << "[" #result "][" << __FILE__ << ":" << __LINE__ << "] " << msg            \
-                      << " failed with error code " << CHECKSTATUS << ": " << status_msg           \
-                      << std::endl;                                                                \
-            std::stringstream errmsg{};                                                            \
-            errmsg << "[" #result "][" << __FILE__ << ":" << __LINE__ << "] " << msg " failure ("  \
-                   << status_msg << ")";                                                           \
-            throw std::runtime_error(errmsg.str());                                                \
-        }                                                                                          \
-    }
-
-int
-start()
-{
-    return 1;
-}
-
 namespace
 {
-rocprofiler_context_id_t&
-get_client_ctx()
-{
-    static rocprofiler_context_id_t ctx{0};
-    return ctx;
-}
-
 rocprofiler_buffer_id_t&
 get_buffer()
 {
@@ -175,6 +143,13 @@ buffered_callback(rocprofiler_context_id_t,
     *output_stream << "[" << __FUNCTION__ << "] " << ss.str() << "\n";
 }
 
+std::shared_mutex&
+get_profile_cache_mutex()
+{
+    static std::shared_mutex mtx;
+    return mtx;
+}
+
 /**
  * Cache to store the profile configs for each agent. This is used to prevent
  * constructing the same profile config multiple times. Used by dispatch_callback
@@ -206,6 +181,7 @@ dispatch_callback(const rocprofiler_spm_dispatch_counting_service_data_t* dispat
      * sets.
      */
     auto search_cache = [&]() {
+        std::shared_lock lock(get_profile_cache_mutex());  // <-- reader lock
         if(auto pos = get_profile_cache().find(dispatch_data->dispatch_info.agent_id.handle);
            pos != get_profile_cache().end())
         {
@@ -217,109 +193,31 @@ dispatch_callback(const rocprofiler_spm_dispatch_counting_service_data_t* dispat
 
     if(!search_cache())
     {
-        std::cerr << "No profile for agent found in cache\n";
-        exit(-1);
+        std::cerr << "No profile for agent found in cache" << std::endl;
     }
 }
 
 /**
- * Construct a profile config for an agent. This function takes an agent (obtained from
- * get_gpu_device_agents()) and a set of counter names to collect. It returns a profile
- * that can be used when a dispatch is received for the agent to collect the specified
- * counters. Note: while you can dynamically create these profiles, it is more efficient
- * to consturct them once in advance (i.e. in tool_init()) since there are non-trivial
- * costs associated with constructing the profile.
+ * Construct a profile config for an agent. Uses common helpers from client.hpp
+ * to iterate counters and create the config, plus fills the dimension cache
+ * (buffered-mode specific).
  */
 rocprofiler_counter_config_id_t
 build_profile_for_agent(rocprofiler_agent_id_t       agent,
                         const std::set<std::string>& counters_to_collect)
 {
-    std::vector<rocprofiler_counter_id_t> gpu_counters;
+    auto collect_counters = get_matched_spm_counters(agent, counters_to_collect);
 
-    // Iterate all the counters on the agent and store them in gpu_counters.
-    ROCPROFILER_CALL(rocprofiler_iterate_spm_supported_counters(
-                         agent,
-                         [](rocprofiler_agent_id_t,
-                            rocprofiler_counter_id_t* counters,
-                            size_t                    num_counters,
-                            void*                     user_data) {
-                             std::vector<rocprofiler_counter_id_t>* vec =
-                                 static_cast<std::vector<rocprofiler_counter_id_t>*>(user_data);
-                             for(size_t i = 0; i < num_counters; i++)
-                             {
-                                 vec->push_back(counters[i]);
-                             }
-                             return ROCPROFILER_STATUS_SUCCESS;
-                         },
-                         static_cast<void*>(&gpu_counters)),
-                     "Could not fetch supported counters");
+    for(auto& counter : collect_counters)
+        fill_dimension_cache(counter);
 
-    // Find the counters we actually want to collect (i.e. those in counters_to_collect)
-    std::vector<rocprofiler_counter_id_t> collect_counters;
-    for(auto& counter : gpu_counters)
-    {
-        rocprofiler_counter_info_v0_t info;
-        ROCPROFILER_CALL(
-            rocprofiler_query_counter_info(
-                counter, ROCPROFILER_COUNTER_INFO_VERSION_0, static_cast<void*>(&info)),
-            "Could not query info for counter");
-        if(counters_to_collect.count(std::string(info.name)) > 0)
-        {
-            std::clog << "Counter: " << counter.handle << " " << info.name << "\n";
-            collect_counters.push_back(counter);
-            fill_dimension_cache(counter);
-        }
-    }
+    std::vector<rocprofiler_spm_parameters_t> input_params{};
+    input_params.push_back(rocprofiler_spm_parameters_t{
+        .size  = sizeof(rocprofiler_spm_parameters_t),
+        .type  = ROCPROFILER_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES,
+        .value = 1200});
 
-    // Create and return the profile
-    rocprofiler_counter_config_id_t profile = {.handle = 0};
-    auto                            params  = rocprofiler_spm_configuration_t{};
-    params.frequency                        = 1.0;
-    params.buffer_size                      = 32768;
-    params.timeout                          = 0;
-    ROCPROFILER_CALL(
-        rocprofiler_spm_create_counter_config(
-            agent, collect_counters.data(), collect_counters.size(), &params, &profile),
-        "Could not construct profile cfg");
-
-    return profile;
-}
-
-/**
- * Returns all GPU agents visible to rocprofiler on the system
- */
-std::vector<rocprofiler_agent_v0_t>
-get_gpu_device_agents()
-{
-    std::vector<rocprofiler_agent_v0_t> agents;
-
-    // Callback used by rocprofiler_query_available_agents to return
-    // agents on the device. This can include CPU agents as well. We
-    // select GPU agents only (i.e. type == ROCPROFILER_AGENT_TYPE_GPU)
-    rocprofiler_query_available_agents_cb_t iterate_cb = [](rocprofiler_agent_version_t agents_ver,
-                                                            const void**                agents_arr,
-                                                            size_t                      num_agents,
-                                                            void*                       udata) {
-        if(agents_ver != ROCPROFILER_AGENT_INFO_VERSION_0)
-            throw std::runtime_error{"unexpected rocprofiler agent version"};
-        auto* agents_v = static_cast<std::vector<rocprofiler_agent_v0_t>*>(udata);
-        for(size_t i = 0; i < num_agents; ++i)
-        {
-            const auto* agent = static_cast<const rocprofiler_agent_v0_t*>(agents_arr[i]);
-            if(agent->type == ROCPROFILER_AGENT_TYPE_GPU) agents_v->emplace_back(*agent);
-        }
-        return ROCPROFILER_STATUS_SUCCESS;
-    };
-
-    // Query the agents, only a single callback is made that contains a vector
-    // of all agents.
-    ROCPROFILER_CALL(
-        rocprofiler_query_available_agents(ROCPROFILER_AGENT_INFO_VERSION_0,
-                                           iterate_cb,
-                                           sizeof(rocprofiler_agent_t),
-                                           const_cast<void*>(static_cast<const void*>(&agents))),
-        "query available agents");
-    return agents;
+    return create_spm_counter_config(agent, collect_counters, input_params);
 }
 
 /**
@@ -356,6 +254,7 @@ tool_init(rocprofiler_client_finalize_t, void* user_data)
         // get_profile_cache() is a map that can be accessed by dispatch_callback
         // below to select the profile config to use when a kernel dispatch is
         // recieved.
+        std::unique_lock lock(get_profile_cache_mutex());
         get_profile_cache().emplace(
             agent.id.handle, build_profile_for_agent(agent.id, std::set<std::string>{"TCC_HIT"}));
     }

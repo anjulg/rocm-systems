@@ -43,7 +43,7 @@ rocprofiler_add_integration_execute_test(
     rocprofv3-test-spm-execute
     COMMAND
         $<TARGET_FILE:rocprofiler-sdk::rocprofv3> --spm-beta-enabled=on --spm
-        ${COUNTER_LIST} --spm-frequency 1.0 --spm-buffer-size 32768 --spm-timeout 40
+        ${COUNTER_LIST} --spm-sample-interval-unit sclk_cycles --spm-sample-interval 1200
         --kernel-trace -d ${CMAKE_CURRENT_BINARY_DIR}/out_spm --output-format json rocpd
         -o spm -- $<TARGET_FILE:simple-transpose>
     DEPENDS simple-transpose

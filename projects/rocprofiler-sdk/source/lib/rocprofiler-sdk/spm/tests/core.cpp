@@ -224,12 +224,19 @@ TEST(spm_core, check_packet_generation)
             rocprofiler_counter_id_t        id     = {.handle = metric.id()};
             ROCP_ERROR << fmt::format("Generating packet for {}", metric);
 
-            auto params        = rocprofiler_spm_configuration_t{};
-            params.frequency   = 1.0;
-            params.buffer_size = 327;
-            params.timeout     = 30;
-            ROCPROFILER_CALL(rocprofiler_spm_create_counter_config(
-                                 agent.get_rocp_agent()->id, &id, 1, &params, &cfg_id),
+            std::vector<rocprofiler_spm_parameters_t*> input_params{};
+            rocprofiler_spm_parameters_t               param{
+                .size  = sizeof(rocprofiler_spm_parameters_t),
+                .type  = ROCPROFILER_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES,
+                .value = 1200};
+            input_params.push_back(&param);
+
+            ROCPROFILER_CALL(rocprofiler_spm_create_counter_config(agent.get_rocp_agent()->id,
+                                                                   &id,
+                                                                   1,
+                                                                   input_params.data(),
+                                                                   input_params.size(),
+                                                                   &cfg_id),
                              "Unable to create profile");
             auto profile = spm::get_spm_counter_config(cfg_id);
             ASSERT_TRUE(profile);
@@ -376,15 +383,21 @@ TEST(spm_core, check_callbacks)
             /**
              * Setup
              */
-            expected_dispatch        expected = {};
-            rocprofiler_counter_id_t id       = {.handle = metric.id()};
-            auto                     params   = rocprofiler_spm_configuration_t{};
-            params.frequency                  = 0.5;
-            params.buffer_size                = 32768;
-            params.timeout                    = 30;
+            expected_dispatch                          expected = {};
+            rocprofiler_counter_id_t                   id       = {.handle = metric.id()};
+            std::vector<rocprofiler_spm_parameters_t*> input_params{};
+            rocprofiler_spm_parameters_t               param{
+                .size  = sizeof(rocprofiler_spm_parameters_t),
+                .type  = ROCPROFILER_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES,
+                .value = 1200};
+            input_params.push_back(&param);
 
-            ROCPROFILER_CALL(rocprofiler_spm_create_counter_config(
-                                 agent.get_rocp_agent()->id, &id, 1, &params, &expected.id),
+            ROCPROFILER_CALL(rocprofiler_spm_create_counter_config(agent.get_rocp_agent()->id,
+                                                                   &id,
+                                                                   1,
+                                                                   input_params.data(),
+                                                                   input_params.size(),
+                                                                   &expected.id),
                              "Unable to create profile");
             auto profile = spm::get_spm_counter_config(expected.id);
             ASSERT_TRUE(profile);
@@ -471,13 +484,19 @@ TEST(spm_core, destroy_counter_profile)
         {
             expected_dispatch        expected = {};
             rocprofiler_counter_id_t id       = {.handle = metric.id()};
-            auto                     params   = rocprofiler_spm_configuration_t{};
-            params.frequency                  = 0.5;
-            params.buffer_size                = 32768;
-            params.timeout                    = 30;
 
-            ROCPROFILER_CALL(rocprofiler_spm_create_counter_config(
-                                 agent.get_rocp_agent()->id, &id, 1, &params, &expected.id),
+            std::vector<rocprofiler_spm_parameters_t*> input_params{};
+            rocprofiler_spm_parameters_t               param{
+                .size  = sizeof(rocprofiler_spm_parameters_t),
+                .type  = ROCPROFILER_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES,
+                .value = 1200};
+            input_params.push_back(&param);
+            ROCPROFILER_CALL(rocprofiler_spm_create_counter_config(agent.get_rocp_agent()->id,
+                                                                   &id,
+                                                                   1,
+                                                                   input_params.data(),
+                                                                   input_params.size(),
+                                                                   &expected.id),
                              "Unable to create profile");
             ROCPROFILER_CALL(rocprofiler_spm_destroy_counter_config(expected.id),
                              "Could not delete profile id");
@@ -659,12 +678,19 @@ TEST(spm_core, test_profile_incremental)
         {
             rocprofiler_counter_config_id_t old_id = cfg_id;
             rocprofiler_counter_id_t        id     = {.handle = block_metrics.front().id()};
-            auto                            params = rocprofiler_spm_configuration_t{};
-            params.frequency                       = 0.5;
-            params.buffer_size                     = 32768;
-            params.timeout                         = 30;
-            ROCPROFILER_CALL(rocprofiler_spm_create_counter_config(
-                                 agent.get_rocp_agent()->id, &id, 1, &params, &cfg_id),
+
+            std::vector<rocprofiler_spm_parameters_t*> input_params{};
+            rocprofiler_spm_parameters_t               param{
+                .size  = sizeof(rocprofiler_spm_parameters_t),
+                .type  = ROCPROFILER_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES,
+                .value = 1200};
+            input_params.push_back(&param);
+            ROCPROFILER_CALL(rocprofiler_spm_create_counter_config(agent.get_rocp_agent()->id,
+                                                                   &id,
+                                                                   1,
+                                                                   input_params.data(),
+                                                                   input_params.size(),
+                                                                   &cfg_id),
                              "Unable to create profile incrementally when we should be able to");
             EXPECT_NE(old_id.handle, cfg_id.handle)
                 << "We expect that the handle changes this is due to the existing profile being "
@@ -679,9 +705,19 @@ TEST(spm_core, test_profile_incremental)
             /**
              * Check profile construction
              */
+            std::vector<rocprofiler_spm_parameters_t*> input_params{};
+            rocprofiler_spm_parameters_t               param{
+                .size  = sizeof(rocprofiler_spm_parameters_t),
+                .type  = ROCPROFILER_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES,
+                .value = 1200};
+            input_params.push_back(&param);
             rocprofiler_counter_id_t id = {.handle = metric.id()};
-            if(status = rocprofiler_spm_create_counter_config(
-                   agent.get_rocp_agent()->id, &id, 1, nullptr, &cfg_id);
+            if(status = rocprofiler_spm_create_counter_config(agent.get_rocp_agent()->id,
+                                                              &id,
+                                                              1,
+                                                              input_params.data(),
+                                                              input_params.size(),
+                                                              &cfg_id);
                status != ROCPROFILER_STATUS_SUCCESS)
             {
                 break;

@@ -41,7 +41,7 @@ set(IS_DISABLED True)
 
 add_library(spm-counter-collection-buffer-client SHARED)
 target_sources(spm-counter-collection-buffer-client PRIVATE buffered_client.cpp
-                                                            client.hpp)
+                                                            common.cpp common.hpp)
 target_link_libraries(
     spm-counter-collection-buffer-client
     PUBLIC rocprofiler-sdk::samples-build-flags
@@ -77,7 +77,7 @@ set_tests_properties(
 
 add_library(spm-counter-collection-callback-client SHARED)
 target_sources(spm-counter-collection-callback-client PRIVATE callback_client.cpp
-                                                              client.hpp)
+                                                              common.cpp common.hpp)
 target_link_libraries(
     spm-counter-collection-callback-client
     PUBLIC rocprofiler-sdk::samples-build-flags

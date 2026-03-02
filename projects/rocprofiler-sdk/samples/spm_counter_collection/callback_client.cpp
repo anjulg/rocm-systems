@@ -20,43 +20,18 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include "client.hpp"
+#include "common.hpp"
 
-#include <rocprofiler-sdk/experimental/spm.h>
 #include <rocprofiler-sdk/registration.h>
-#include <rocprofiler-sdk/rocprofiler.h>
 
 #include <fstream>
 #include <functional>
 #include <iostream>
 #include <mutex>
-#include <set>
 #include <shared_mutex>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
-
-#define ROCPROFILER_CALL(result, msg)                                                              \
-    {                                                                                              \
-        rocprofiler_status_t CHECKSTATUS = result;                                                 \
-        if(CHECKSTATUS != ROCPROFILER_STATUS_SUCCESS)                                              \
-        {                                                                                          \
-            std::string status_msg = rocprofiler_get_status_string(CHECKSTATUS);                   \
-            std::cerr << "[" #result "][" << __FILE__ << ":" << __LINE__ << "] " << msg            \
-                      << " failed with error code " << CHECKSTATUS << ": " << status_msg           \
-                      << std::endl;                                                                \
-            std::stringstream errmsg{};                                                            \
-            errmsg << "[" #result "][" << __FILE__ << ":" << __LINE__ << "] " << msg " failure ("  \
-                   << status_msg << ")";                                                           \
-            throw std::runtime_error(errmsg.str());                                                \
-        }                                                                                          \
-    }
-
-int
-start()
-{
-    return 1;
-}
 
 namespace
 {
@@ -65,13 +40,6 @@ struct tool_data_t
     std::mutex    mut{};
     std::ostream* output_stream{nullptr};
 };
-
-rocprofiler_context_id_t&
-get_client_ctx()
-{
-    static rocprofiler_context_id_t ctx{0};
-    return ctx;
-}
 
 void
 record_callback(const rocprofiler_spm_dispatch_counting_service_data_t* dispatch_data,
@@ -135,60 +103,19 @@ dispatch_callback(const rocprofiler_spm_dispatch_counting_service_data_t* dispat
     auto wlock = std::unique_lock{m_mutex};
     if(search_cache()) return;
 
-    // Counters we want to collect (here its SQ_WAVES)
-    std::set<std::string> counters_to_collect = {"SQ_WAVES"};
-    // GPU Counter IDs
-    std::vector<rocprofiler_counter_id_t> gpu_counters;
+    auto collect_counters =
+        get_matched_spm_counters(dispatch_data->dispatch_info.agent_id, {"SQ_WAVES"});
 
-    // Iterate through the agents and get the counters available on that agent
-    ROCPROFILER_CALL(rocprofiler_iterate_spm_supported_counters(
-                         dispatch_data->dispatch_info.agent_id,
-                         [](rocprofiler_agent_id_t,
-                            rocprofiler_counter_id_t* counters,
-                            size_t                    num_counters,
-                            void*                     user_data) {
-                             std::vector<rocprofiler_counter_id_t>* vec =
-                                 static_cast<std::vector<rocprofiler_counter_id_t>*>(user_data);
-                             for(size_t i = 0; i < num_counters; i++)
-                             {
-                                 vec->push_back(counters[i]);
-                             }
-                             return ROCPROFILER_STATUS_SUCCESS;
-                         },
-                         static_cast<void*>(&gpu_counters)),
-                     "Could not fetch supported counters");
+    std::vector<rocprofiler_spm_parameters_t> input_params{};
+    input_params.push_back(rocprofiler_spm_parameters_t{
+        .size  = sizeof(rocprofiler_spm_parameters_t),
+        .type  = ROCPROFILER_SPM_PARAMETER_TYPE_SAMPLE_INTERVAL_SCLK_CYCLES,
+        .value = 1200});
 
-    std::vector<rocprofiler_counter_id_t> collect_counters;
-    // Look for the counters contained in counters_to_collect in gpu_counters
-    for(auto& counter : gpu_counters)
-    {
-        rocprofiler_counter_info_v0_t info;
-        ROCPROFILER_CALL(
-            rocprofiler_query_counter_info(
-                counter, ROCPROFILER_COUNTER_INFO_VERSION_0, static_cast<void*>(&info)),
-            "Could not query info");
-        if(counters_to_collect.count(std::string(info.name)) > 0)
-        {
-            std::clog << "Counter: " << counter.handle << " " << info.name << "\n";
-            collect_counters.push_back(counter);
-        }
-    }
-
-    // Create a colleciton profile for the counters
-    rocprofiler_counter_config_id_t profile = {.handle = 0};
-    auto                            params  = rocprofiler_spm_configuration_t{};
-    params.frequency                        = 1.0;
-    params.buffer_size                      = 32768;
-    params.timeout                          = 0;
-    ROCPROFILER_CALL(rocprofiler_spm_create_counter_config(dispatch_data->dispatch_info.agent_id,
-                                                           collect_counters.data(),
-                                                           collect_counters.size(),
-                                                           &params,
-                                                           &profile),
-                     "Could not construct profile cfg");
+    auto profile = create_spm_counter_config(
+        dispatch_data->dispatch_info.agent_id, collect_counters, input_params);
 
     profile_cache.emplace(dispatch_data->dispatch_info.agent_id.handle, profile);
-    // Return the profile to collect those counters for this dispatch
     *config = profile;
 }
 
