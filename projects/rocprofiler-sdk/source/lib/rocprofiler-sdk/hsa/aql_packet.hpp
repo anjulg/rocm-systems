@@ -23,6 +23,7 @@
 #pragma once
 
 #include "lib/common/container/small_vector.hpp"
+#include "lib/common/synchronized.hpp"
 #include "lib/rocprofiler-sdk/aql/aql_profile_v2.h"
 #include "lib/rocprofiler-sdk/spm/decode.hpp"
 #include "lib/rocprofiler-sdk/spm/interface.hpp"
@@ -277,8 +278,6 @@ struct SPMMemoryPool
 
 class SPMPacket : public AQLPacket
 {
-    friend class rocprofiler::aql::SPMPacketConstruct;
-
 public:
     SPMPacket(aqlprofile_agent_handle_t               aql_agent,
               std::shared_ptr<SPMMemoryPool>          _pool,
@@ -294,7 +293,7 @@ public:
     hsa_agent_t GetAgent() const { return pool ? pool->gpu_agent : hsa_agent_t{}; }
     std::optional<rocprofiler_buffer_id_t>           buffer;
     aqlprofile_agent_handle_t                        agent;
-    rocprofiler_user_data_t                          user_data;
+    rocprofiler_user_data_t                          user_data{};
     void*                                            record_callback_args{};
     aqlprofile_spm_buffer_desc_t                     aql_desc{};
     rocprofiler::spm::spm_descriptor_t               spm_desc{};
@@ -311,8 +310,8 @@ public:
     std::vector<aqlprofile_spm_parameter_t>          aql_params{};
 
 private:
-    std::atomic<bool> running{false};
-    bool              is_valid{false};
+    common::Synchronized<bool> running{false};
+    bool                       is_valid{false};
 };
 
 }  // namespace hsa

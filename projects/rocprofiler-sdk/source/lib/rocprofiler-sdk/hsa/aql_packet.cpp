@@ -293,7 +293,8 @@ SPMMemoryPool::Alloc(void** ptr, size_t size, aqlprofile_buffer_desc_flags_t fla
     if(!data) return HSA_STATUS_ERROR;
 
     auto& pool = *reinterpret_cast<SPMMemoryPool*>(data);
-    if(!pool.allocate_fn || !pool.free_fn || !pool.allow_access_fn) return HSA_STATUS_ERROR;
+    if(!pool.allocate_fn || !pool.free_fn || !pool.allow_access_fn || !pool.fill_fn)
+        return HSA_STATUS_ERROR;
 
     if(flags.host_access)
         status = pool.allocate_fn(pool.cpu_pool_, size, hsa_amd_memory_pool_executable_flag, ptr);
@@ -323,8 +324,11 @@ SPMPacket::SPMPacket(aqlprofile_agent_handle_t               aql_agent,
 , aql_params(std::move(params))
 {
     sym = rocprofiler::spm::construct_spm_interface();
-    if(!sym) return;
-
+    if(!sym)
+    {
+        ROCP_ERROR << "Failed to construct SPM interface";
+        return;
+    }
     aqlprofile_spm_profile_t profile{.aql_agent       = aql_agent,
                                      .hsa_agent       = pool->gpu_agent,
                                      .events          = aql_events.data(),
@@ -338,8 +342,12 @@ SPMPacket::SPMPacket(aqlprofile_agent_handle_t               aql_agent,
                                      .userdata        = pool.get()};
 
     auto status = sym->spm_create_packets(&handle, &aql_desc, &packets, profile, 0);
-    if(status != HSA_STATUS_SUCCESS) return;
-
+    if(status != HSA_STATUS_SUCCESS)
+    {
+        ROCP_ERROR << "spm_create_packets failed with HSA status: " << status
+                   << " (event_count=" << aql_events.size() << ")";
+        return;
+    }
     packets.start_packet.header            = VENDOR_BIT | BARRIER_BIT;
     packets.stop_packet.header             = VENDOR_BIT | BARRIER_BIT;
     packets.start_packet.completion_signal = hsa_signal_t{.handle = 0};
@@ -380,30 +388,46 @@ SPMPacket::populate_after()
 void
 SPMPacket::kfd_start()
 {
-    ROCP_FATAL_IF(!handle.handle) << "Attempt at starting SPM with unitialized packet!";
+    ROCP_CI_LOG_IF(FATAL, !handle.handle);
+    ROCP_ERROR << "Attempt at starting SPM with uninitialized packet!";
 
-    if(running.exchange(true))
-    {
-        ROCP_ERROR << "Double call to KFD start!";
-        return;
-    }
-
-    auto status = sym->spm_start(this->handle, spm::aql_data_callback, this);
-    ROCP_FATAL_IF(status != HSA_STATUS_SUCCESS) << "Unable to acquire KFD thread";
+    running.wlock([&](auto& _running) {
+        if(_running == true)
+        {
+            ROCP_ERROR << "Double call to KFD start!";
+            return;
+        }
+        auto status = sym->spm_start(this->handle, spm::aql_data_callback, this);
+        ROCP_FATAL_IF(status != HSA_STATUS_SUCCESS) << "Unable to acquire KFD thread";
+        _running = true;
+    });
 }
 
 void
 SPMPacket::kfd_stop()
 {
-    if(running.exchange(false))
-        sym->spm_stop(this->handle);
-    else
-        ROCP_WARNING << "Double call to KFD stop!";
+    running.wlock([&](auto& _running) {
+        if(_running == false)
+        {
+            ROCP_WARNING << "Double call to KFD stop!";
+            return;
+        }
+        auto status = sym->spm_stop(this->handle);
+        ROCP_WARNING_IF(status != HSA_STATUS_SUCCESS)
+            << "spm_stop failed with HSA status: " << status;
+        _running = false;
+    });
 }
 
 SPMPacket::~SPMPacket()
 {
-    if(running.exchange(false) && sym) sym->spm_stop(this->handle);
+    running.wlock([&](auto& _running) {
+        if(_running == false) return;
+        auto status = sym->spm_stop(this->handle);
+        ROCP_WARNING_IF(status != HSA_STATUS_SUCCESS)
+            << "spm_stop failed with HSA status: " << status;
+        _running = false;
+    });
 }
 }  // namespace hsa
 }  // namespace rocprofiler

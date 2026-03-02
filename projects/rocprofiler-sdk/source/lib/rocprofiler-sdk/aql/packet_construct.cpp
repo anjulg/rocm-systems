@@ -301,9 +301,9 @@ spm_construct_packet(const rocprofiler_agent_id_t              agent_id,
     const auto* aql_cache = CHECK_NOTNULL(rocprofiler::agent::get_agent_cache(agent));
     auto        pool      = std::make_shared<hsa::SPMMemoryPool>(
         *aql_cache, *hsa::get_amd_ext_table(), hsa::get_core_table()->hsa_memory_copy_fn);
-    const auto* aql_agent = rocprofiler::agent::get_aql_agent(agent->id);
+    const auto* aql_agent = CHECK_NOTNULL(rocprofiler::agent::get_aql_agent(agent->id));
 
-    for(auto param : spm_parameters)
+    for(const auto& param : spm_parameters)
     {
         switch(param.type)
         {
@@ -313,7 +313,10 @@ spm_construct_packet(const rocprofiler_agent_id_t              agent_id,
                 params.push_back({AQLPROFILE_SPM_PARAMETER_TYPE_SAMPLE_MODE,
                                   AQLPROFILE_SPM_PARAMETER_SAMPLE_MODE_SCLK});
                 break;
-            default: break;
+            default:
+                ROCP_WARNING << "Unknown SPM parameter type: " << static_cast<int>(param.type)
+                             << " parameter ignored";
+                break;
         }
     }
 
@@ -323,12 +326,14 @@ spm_construct_packet(const rocprofiler_agent_id_t              agent_id,
 
         for(unsigned block_index = 0; block_index < query_info.instance_count; ++block_index)
         {
+            uint64_t event_id = 0;
+            if(!metric.event().empty()) event_id = std::stoul(metric.event(), nullptr);
+
             auto event = aqlprofile_pmc_event_t{
                 .block_index = block_index,
-                .event_id =
-                    static_cast<uint32_t>(std::stoul(metric.event().c_str(), nullptr) & 0xFFFFFFFF),
-                .flags      = aqlprofile_pmc_event_flags_t{metric.flags()},
-                .block_name = static_cast<hsa_ven_amd_aqlprofile_block_name_t>(query_info.id)};
+                .event_id    = static_cast<uint32_t>(event_id & 0xFFFFFFFF),
+                .flags       = aqlprofile_pmc_event_flags_t{metric.flags()},
+                .block_name  = static_cast<hsa_ven_amd_aqlprofile_block_name_t>(query_info.id)};
 
             events.push_back(event);
             id_map.push_back({rocprofiler_counter_id_t{.handle = metric.id()}, block_index});
@@ -372,15 +377,16 @@ spm_can_collect(const rocprofiler_agent_id_t agent_id, const std::vector<counter
     {
         auto query_info                = get_query_info(agent_id, metric);
         _metrics.emplace_back().metric = metric;
-
-        auto event_id =
-            static_cast<uint32_t>(std::stoul(metric.event().c_str(), nullptr) & 0xFFFFFFFF);
+        uint64_t event_id              = 0;
+        if(!metric.event().empty())
+            event_id =
+                static_cast<uint32_t>(std::stoul(metric.event().c_str(), nullptr) & 0xFFFFFFFF);
 
         for(unsigned block_index = 0; block_index < query_info.instance_count; ++block_index)
         {
             _metrics.back().events.push_back(
                 {.block_index = block_index,
-                 .event_id    = event_id,
+                 .event_id    = static_cast<uint32_t>(event_id),
                  .flags       = aqlprofile_pmc_event_flags_t{metric.flags()},
                  .block_name  = static_cast<hsa_ven_amd_aqlprofile_block_name_t>(query_info.id)});
         }
