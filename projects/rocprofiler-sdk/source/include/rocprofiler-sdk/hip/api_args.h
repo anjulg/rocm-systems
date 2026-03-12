@@ -3455,6 +3455,14 @@ typedef union rocprofiler_hip_api_args_t
         hipStream_t        stream;
     } hipMemPrefetchBatchAsync;
 #endif
+#if HIP_RUNTIME_API_TABLE_STEP_VERSION >= 27
+    struct
+    {
+        hipMemPool_t*        memPool;
+        hipMemLocation*      location;
+        hipMemAllocationType type;
+    } hipMemGetDefaultMemPool;
+#endif
 } rocprofiler_hip_api_args_t;
 
 ROCPROFILER_EXTERN_C_FINI

@@ -655,6 +655,7 @@ global:
     hipKernelSetAttribute;
     hipKernelGetFunction;
     hipMemPrefetchBatchAsync;
+    hipMemGetDefaultMemPool;
 local:
     *;
 } hip_7.1;

@@ -885,6 +885,8 @@ hipError_t hipKernelGetAttribute(int* pi, hipFunction_attribute attrib, hipKerne
                                  hipDevice_t dev);
 hipError_t hipKernelSetAttribute(hipFunction_attribute attrib, int value, hipKernel_t kernel, hipDevice_t dev);
 hipError_t hipKernelGetFunction(hipFunction_t* pFunc, hipKernel_t kernel);
+hipError_t hipMemGetDefaultMemPool(hipMemPool_t* memPool, hipMemLocation* location,
+                                   hipMemAllocationType type);
 }  // namespace hip
 
 namespace hip {
@@ -1443,6 +1445,7 @@ void UpdateDispatchTable(HipDispatchTable* ptrDispatchTable) {
   ptrDispatchTable->hipKernelGetAttribute_fn = hip::hipKernelGetAttribute;
   ptrDispatchTable->hipKernelSetAttribute_fn = hip::hipKernelSetAttribute;
   ptrDispatchTable->hipKernelGetFunction_fn = hip::hipKernelGetFunction;
+  ptrDispatchTable->hipMemGetDefaultMemPool_fn = hip::hipMemGetDefaultMemPool;
 }
 
 #if HIP_ROCPROFILER_REGISTER > 0
@@ -2141,15 +2144,17 @@ HIP_ENFORCE_ABI(HipDispatchTable, hipKernelSetAttribute_fn, 515);
 HIP_ENFORCE_ABI(HipDispatchTable, hipKernelGetFunction_fn, 516);
 // HIP_RUNTIME_API_TABLE_STEP_VERSION == 26
 HIP_ENFORCE_ABI(HipDispatchTable, hipMemPrefetchBatchAsync_fn, 517);
+// HIP_RUNTIME_API_TABLE_STEP_VERSION == 27
+HIP_ENFORCE_ABI(HipDispatchTable, hipMemGetDefaultMemPool_fn, 518);
 // if HIP_ENFORCE_ABI entries are added for each new function pointer in the table, the number below
 // will be +1 of the number in the last HIP_ENFORCE_ABI line. E.g.:
 //
 //  HIP_ENFORCE_ABI(<table>, <functor>, 8)
 //
 //  HIP_ENFORCE_ABI_VERSIONING(<table>, 9) <- 8 + 1 = 9
-HIP_ENFORCE_ABI_VERSIONING(HipDispatchTable, 518)
+HIP_ENFORCE_ABI_VERSIONING(HipDispatchTable, 519)
 
-static_assert(HIP_RUNTIME_API_TABLE_MAJOR_VERSION == 0 && HIP_RUNTIME_API_TABLE_STEP_VERSION == 26,
+static_assert(HIP_RUNTIME_API_TABLE_MAJOR_VERSION == 0 && HIP_RUNTIME_API_TABLE_STEP_VERSION == 27,
               "If you get this error, add new HIP_ENFORCE_ABI(...) code for the new function "
               "pointers and then update this check so it is true");
 #endif

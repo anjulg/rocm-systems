@@ -676,6 +676,9 @@ HIP_API_INFO_DEFINITION_V(ROCPROFILER_HIP_TABLE_ID_Runtime, ROCPROFILER_HIP_RUNT
 #if HIP_RUNTIME_API_TABLE_STEP_VERSION >= 26
 HIP_API_INFO_DEFINITION_V(ROCPROFILER_HIP_TABLE_ID_Runtime, ROCPROFILER_HIP_RUNTIME_API_ID_hipMemPrefetchBatchAsync, hipMemPrefetchBatchAsync, hipMemPrefetchBatchAsync_fn, dev_ptrs, sizes, count, prefetch_locs, prefetch_loc_idxs, num_prefetch_locs, flags, stream);
 #endif
+#if HIP_RUNTIME_API_TABLE_STEP_VERSION >= 27
+HIP_API_INFO_DEFINITION_V(ROCPROFILER_HIP_TABLE_ID_Runtime, ROCPROFILER_HIP_RUNTIME_API_ID_hipMemGetDefaultMemPool, hipMemGetDefaultMemPool, hipMemGetDefaultMemPool_fn, memPool, location, type);
+#endif
 // clang-format on
 
 #else
