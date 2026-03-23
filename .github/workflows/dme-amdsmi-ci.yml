@@ -6,7 +6,7 @@
 #       │                        │
 #       └── libamdsmi.so ◀───────┘  (built from projects/amdsmi)
 #
-# This workflow builds AMDSMI from the super-repo, compiles
+# This workflow builds AMDSMI from the mono-repo, compiles
 # GPU-Agent and Device Metrics Exporter, then verifies that
 # Prometheus GPU metrics are exposed correctly.
 # ──────────────────────────────────────────────────────────────
@@ -110,7 +110,7 @@ jobs:
           /usr/local/go/bin/go version
 
       # ────────────────────────────────────────────────────────
-      # Phase 1 — Build AMDSMI from the super-repo
+      # Phase 1 — Build AMDSMI from the mono-repo
       # ────────────────────────────────────────────────────────
       - name: Build and Install AMDSMI
         run: |
