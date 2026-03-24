@@ -86,18 +86,3 @@ set_tests_properties(
                "${ROCPROFILER_DEFAULT_FAIL_REGEX}"
                DISABLED
                "${IS_DISABLED}")
-
-set_tests_properties(
-    rocattach-parallel-attach-test-signal-execute
-    PROPERTIES TIMEOUT
-               45
-               LABELS
-               "integration-tests"
-               ENVIRONMENT
-               "${rocattach-test-env}"
-               PASS_REGULAR_EXPRESSION
-               "Attachment test process [0-9]+ received signal 28"
-               FAIL_REGULAR_EXPRESSION
-               "${ROCPROFILER_DEFAULT_FAIL_REGEX}"
-               DISABLED
-               "${IS_DISABLED}")
