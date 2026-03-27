@@ -311,7 +311,9 @@ def generate_domain_query(
     return (view_name, domain_select)
 
 
-def create_summary_queries(connection: RocpdImportData, by_rank=False):
+def create_summary_queries(
+    connection: RocpdImportData, by_rank=False, truncate_kernels=False
+):
     """Create summary queries for eligible temporary views in the database."""
 
     NAME_COLUMN_MAP = {
@@ -334,19 +336,22 @@ def create_summary_queries(connection: RocpdImportData, by_rank=False):
         if not required_columns.issubset(columns):
             continue
 
+        # Determine the name column to use
+        if view_name == "kernels" and truncate_kernels:
+            name_column = "truncated_name"
+        else:
+            name_column = NAME_COLUMN_MAP.get(view_name, "name")
+
         # Create regular summary query
         summary_query_name, summary_query = generate_summary_query(
-            view_name, "", name_column=NAME_COLUMN_MAP.get(view_name, "name")
+            view_name, "", name_column=name_column
         )
         queries[summary_query_name] = summary_query
 
         # Create per-rank summary query
         if by_rank:
             per_rank_query_name, summary_by_rank_query = generate_summary_query(
-                view_name,
-                "",
-                name_column=NAME_COLUMN_MAP.get(view_name, "name"),
-                by_rank=True,
+                view_name, "", name_column=name_column, by_rank=True
             )
             queries[per_rank_query_name] = summary_by_rank_query
 
@@ -463,6 +468,7 @@ def generate_all_summaries(connection: RocpdImportData, **kwargs: Any) -> None:
     output_path = kwargs.get("output_path", "./rocpd-output-data")
     region_categories = kwargs.get("region_categories", None)
     output_format = kwargs.get("format", "console")
+    truncate_kernels = kwargs.get("truncate_kernels", False)
 
     if not check_function_availability(connection, "sqrt"):
         connection.create_function(
@@ -478,7 +484,7 @@ def generate_all_summaries(connection: RocpdImportData, **kwargs: Any) -> None:
     summary_queries = {}
 
     # Create the summary queries
-    summary_queries.update(create_summary_queries(connection, by_rank))
+    summary_queries.update(create_summary_queries(connection, by_rank, truncate_kernels))
     summary_queries.update(
         create_summary_region_queries(
             connection, by_rank, region_categories=region_categories
@@ -536,9 +542,21 @@ def add_args(parser):
         default=None,
         help="Specify region categories to include in the summary (example: HIP, HSA, RCCL, ROCDECODE, ROCJPEG, MARKER). If not specified, categories will be automatically retrieved from the database.",
     )
+    summary_options.add_argument(
+        "--truncate-kernels",
+        action="store_true",
+        default=False,
+        help="Display truncated kernel names (function name only, without template parameters)",
+    )
 
     def process_args(input, args):
-        valid_args = ["format", "domain_summary", "summary_by_rank", "region_categories"]
+        valid_args = [
+            "format",
+            "domain_summary",
+            "summary_by_rank",
+            "region_categories",
+            "truncate_kernels",
+        ]
 
         ret = {}
         for itr in valid_args:
