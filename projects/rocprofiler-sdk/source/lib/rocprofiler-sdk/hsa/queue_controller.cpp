@@ -542,8 +542,9 @@ queue_controller_sync()
 void
 queue_controller_fini()
 {
+    // Fix ROCM-1214: skip sync() during fini — HSA runtime may already be torn down
     if(get_queue_controller())
-        get_queue_controller()->iterate_queues([](const Queue* _queue) { _queue->sync(); });
+        get_queue_controller()->iterate_queues([](const Queue* _queue) { (void) _queue; });
 }
 
 void

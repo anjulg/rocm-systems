@@ -72,7 +72,14 @@ proccess_completed_cb(completed_cb_params_t&& params)
 
     if(info->buffer)
     {
-        buf = CHECK_NOTNULL(buffer::get_buffer(info->buffer->handle));
+        // Fix ROCM-1214: buffer may be destroyed before AQL callback (race on teardown)
+        buf = buffer::get_buffer(info->buffer->handle);
+        if(!buf)
+        {
+            ROCP_WARNING << fmt::format(
+                "Buffer {} destroyed before sample was processed (skipping)", info->buffer->handle);
+            return;
+        }
     }
 
     auto _corr_id_v =
