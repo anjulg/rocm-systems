@@ -2,13 +2,11 @@
 # SPDX-License-Identifier:  MIT
 
 import csv
+import re
 import sqlite3
 from contextlib import ExitStack, closing
-from typing import Any
 
-import pandas as pd
-
-from utils.logger import console_error
+from utils.logger import console_debug, console_error
 
 # From schema definition in source/share/rocprofiler-sdk-rocpd/data_views.sql
 # in rocprofiler-sdk repository
@@ -58,6 +56,8 @@ TABLE_NAME_PREFIX_QUERY = (
     "AND name LIKE '{table_name_prefix}%'"
 )
 INSERT_QUERY = "INSERT INTO {table_name} ({columns}) VALUES ({placeholders})"
+ROCPD_KERNEL_DISPATCH_VIEW_NAME = "rocpd_kernel_dispatch"
+ROCPD_PMC_EVENT_VIEW_NAME = "rocpd_pmc_event"
 COUNTER_COLLECTION_COLUMNS = [
     "GPU_ID",
     "GUID",
@@ -131,77 +131,53 @@ def convert_dbs_to_csv(
                         )
 
 
-def load_dbs_to_dataframes(db_paths: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    counter_frames: list[pd.DataFrame] = []
-    marker_frames: list[pd.DataFrame] = []
+def _get_backing_table_name(conn: sqlite3.Connection, view_name: str) -> str | None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='view' AND name=?",
+        (view_name,),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
 
-    for db_path in db_paths:
-        try:
-            with closing(sqlite3.connect(db_path)) as conn:
-                counter_frames.append(pd.read_sql_query(COUNTERS_COLLECTION_QUERY, conn))
-                marker_frames.append(pd.read_sql_query(MARKER_API_TRACE_QUERY, conn))
-        except OSError as e:
-            console_error(f"Database error while extracting data from {db_path}: {e}")
-        except Exception as e:
-            console_error(f"Unexpected error while extracting data from {db_path}: {e}")
-
-    if counter_frames:
-        counter_df = pd.concat(counter_frames, ignore_index=True)
-    else:
-        counter_df = pd.DataFrame(columns=COUNTER_COLLECTION_COLUMNS)
-
-    if marker_frames:
-        marker_df = pd.concat(marker_frames, ignore_index=True)
-    else:
-        marker_df = pd.DataFrame(columns=MARKER_TRACE_COLUMNS)
-
-    return counter_df, marker_df
+    match = re.search(r"FROM\s+`([^`]+)`", row[0], re.IGNORECASE)
+    if match:
+        return match.group(1)
+    return None
 
 
-def process_rocpd_csv(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Merge counters across unique dispatches from the
-    input dataframe and return processed dataframe.
-    """
-    if df.empty:
-        return df
+def create_rocpd_extraction_indexes(rocpd_db_path: str) -> None:
+    """Create targeted indexes that speed up counters_collection extraction."""
+    try:
+        with closing(sqlite3.connect(rocpd_db_path)) as conn:
+            pmc_event_table = _get_backing_table_name(conn, ROCPD_PMC_EVENT_VIEW_NAME)
+            kernel_dispatch_table = _get_backing_table_name(
+                conn, ROCPD_KERNEL_DISPATCH_VIEW_NAME
+            )
 
-    data: list[dict[str, Any]] = []
+            if pmc_event_table is None or kernel_dispatch_table is None:
+                console_debug(
+                    f"Skipping rocpd index creation for {rocpd_db_path}: "
+                    "could not resolve backing tables."
+                )
+                return
 
-    # Group by unique kernel and merge into a single row
-    for _, group_df in df.groupby([
-        "Dispatch_ID",
-        "Kernel_Name",
-        "Grid_Size",
-        "Workgroup_Size",
-        "LDS_Per_Workgroup",
-    ]):
-        row = {
-            "GPU_ID": group_df["GPU_ID"].iloc[0],
-            "Grid_Size": group_df["Grid_Size"].iloc[0],
-            "Workgroup_Size": group_df["Workgroup_Size"].iloc[0],
-            "LDS_Per_Workgroup": group_df["LDS_Per_Workgroup"].iloc[0],
-            "Scratch_Per_Workitem": group_df["Scratch_Per_Workitem"].iloc[0],
-            "Arch_VGPR": group_df["Arch_VGPR"].iloc[0],
-            "Accum_VGPR": group_df["Accum_VGPR"].iloc[0],
-            "SGPR": group_df["SGPR"].iloc[0],
-            "Kernel_Name": group_df["Kernel_Name"].iloc[0],
-            "Kernel_ID": group_df["Kernel_ID"].iloc[0],
-            "Start_Timestamp": group_df["Start_Timestamp"].iloc[0],
-            "End_Timestamp": group_df["End_Timestamp"].iloc[0],
-        }
-        # Each counter will become its own column
-        row.update(dict(zip(group_df["Counter_Name"], group_df["Counter_Value"])))
-        data.append(row)
-    df = pd.DataFrame(data)
-    # Rank GPU IDs, map lowest number to 0, next to 1, etc.
-    df["GPU_ID"] = df["GPU_ID"].rank(method="dense").astype(int) - 1
-    # Reset dispatch IDs
-    df["Dispatch_ID"] = range(len(df))
-    return df
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS "
+                f"idx_{pmc_event_table}_event_pmc "
+                f"ON `{pmc_event_table}` (event_id, pmc_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS "
+                f"idx_{kernel_dispatch_table}_event_dispatch_agent "
+                f"ON `{kernel_dispatch_table}` (event_id, dispatch_id, agent_id)"
+            )
+            conn.commit()
+    except OSError as e:
+        console_error(f"Database error while creating rocpd indexes: {e}")
+    except Exception as e:
+        console_error(f"Unexpected error while creating rocpd indexes: {e}")
 
-
-def update_rocpd_pmc_events(counter_info: pd.DataFrame, rocpd_db_path: str) -> None:
+def update_rocpd_pmc_events(counter_info: list[dict], rocpd_db_path: str) -> None:
     """Updates pmc_event table in the given rocpd database path."""
     try:
         with closing(sqlite3.connect(rocpd_db_path)) as conn:
@@ -226,29 +202,31 @@ def update_rocpd_pmc_events(counter_info: pd.DataFrame, rocpd_db_path: str) -> N
             # Native counter collection CSV has dispatch_id, but schema needs event_id
             # event_id may differ from dispatch_id when marker API tracing is enabled
             with closing(conn.execute(KERNEL_DISPATCH_QUERY, (guid,))) as cursor:
-                rows = cursor.fetchall()
-            if not rows:
+                db_rows = cursor.fetchall()
+            if not db_rows:
                 console_error("No kernel dispatch data found.")
                 return
+            # DB output (numeric) converted to str to align with counter_info
             dispatch_to_event = {
-                dispatch_id: event_id for dispatch_id, event_id, _ in rows
+                str(dispatch_id): str(event_id) for dispatch_id, event_id, _ in db_rows
             }
-            counter_info["event_id"] = counter_info["dispatch_id"].map(
-                dispatch_to_event
-            )
+
+            # Map dispatch_id to event_id for each row
+            # Create new event_id column without destroying dispatch_id
+            for row in counter_info:
+                dispatch_id = row.get("dispatch_id")
+                row["event_id"] = dispatch_to_event.get(dispatch_id)
+
             columns = ("guid", "event_id", "pmc_id", "value")
-            values = list(
-                zip(
-                    # guid
-                    [guid] * len(counter_info),
-                    # event_id
-                    counter_info["event_id"],
-                    # pmc_id
-                    counter_info["counter_id"],
-                    # value
-                    counter_info["counter_value"],
+            values = [
+                (
+                    guid,
+                    row.get("event_id"),
+                    row.get("counter_id"),
+                    row.get("counter_value"),
                 )
-            )
+                for row in counter_info
+            ]
 
             # insert into pmc_event table
             with conn:
