@@ -1,4 +1,4 @@
-# perfxpert
+# ROCm PerfXpert
 
 **AI-powered GPU trace analysis for AMD ROCm — no C++ dependency required.**
 
