@@ -25,6 +25,7 @@
 #include "core/trace_cache/cacheable.hpp"
 #include "core/trace_cache/sample_type.hpp"
 
+#include "library/pmc/collectors/cpu/sample.hpp"
 #include "library/pmc/collectors/gpu/sample.hpp"
 #include "library/pmc/collectors/nic/sample.hpp"
 
@@ -75,7 +76,7 @@ struct processor_t
 
     void handle(const ainic_pmc_sample& sample) { static_cast<T*>(this)->handle(sample); }
 
-    void handle(const cpu_freq_sample& sample) { static_cast<T*>(this)->handle(sample); }
+    void handle(const cpu_pmc_sample& sample) { static_cast<T*>(this)->handle(sample); }
 
     void handle(const backtrace_region_sample& sample)
     {
@@ -103,7 +104,7 @@ struct processor_view_t
     using pmc_event_fn_t        = void (*)(void*, const pmc_event_with_sample&) noexcept;
     using gpu_pmc_sample_fn_t   = void (*)(void*, const gpu_pmc_sample&) noexcept;
     using ainic_pmc_sample_fn_t = void (*)(void*, const ainic_pmc_sample&) noexcept;
-    using cpu_freq_sample_fn_t  = void (*)(void*, const cpu_freq_sample&) noexcept;
+    using cpu_pmc_sample_fn_t   = void (*)(void*, const cpu_pmc_sample&) noexcept;
     using backtrace_region_fn_t = void (*)(void*,
                                            const backtrace_region_sample&) noexcept;
     using prepare_for_processing_fn_t = void (*)(void*) noexcept;
@@ -122,7 +123,7 @@ struct processor_view_t
         pmc_event_fn_t              handle_pmc_event;
         gpu_pmc_sample_fn_t         handle_gpu_pmc_sample;
         ainic_pmc_sample_fn_t       handle_ainic_pmc_sample;
-        cpu_freq_sample_fn_t        handle_cpu_freq_sample;
+        cpu_pmc_sample_fn_t         handle_cpu_pmc_sample;
         backtrace_region_fn_t       handle_backtrace_region;
         prepare_for_processing_fn_t prepare_for_processing;
         finalize_processing_fn_t    finalize_processing;
@@ -188,9 +189,9 @@ struct processor_view_t
         m_vtable->handle_ainic_pmc_sample(m_object, sample);
     }
 
-    ROCPROFSYS_INLINE void handle(const cpu_freq_sample& sample) const noexcept
+    ROCPROFSYS_INLINE void handle(const cpu_pmc_sample& sample) const noexcept
     {
-        m_vtable->handle_cpu_freq_sample(m_object, sample);
+        m_vtable->handle_cpu_pmc_sample(m_object, sample);
     }
 
     ROCPROFSYS_INLINE void handle(const backtrace_region_sample& sample) const noexcept
@@ -242,7 +243,7 @@ private:
             +[](void* obj, const ainic_pmc_sample& sample) noexcept {
                 static_cast<T*>(obj)->handle(sample);
             },
-            +[](void* obj, const cpu_freq_sample& sample) noexcept {
+            +[](void* obj, const cpu_pmc_sample& sample) noexcept {
                 static_cast<T*>(obj)->handle(sample);
             },
             +[](void* obj, const backtrace_region_sample& sample) noexcept {
@@ -326,8 +327,8 @@ struct sample_processor_t
             case type_identifier_t::ainic_pmc_sample:
                 handle_sample(static_cast<const ainic_pmc_sample&>(sample));
                 break;
-            case type_identifier_t::cpu_freq_sample:
-                handle_sample(static_cast<const cpu_freq_sample&>(sample));
+            case type_identifier_t::cpu_pmc_sample:
+                handle_sample(static_cast<const cpu_pmc_sample&>(sample));
                 break;
             case type_identifier_t::backtrace_region_sample:
                 handle_sample(static_cast<const backtrace_region_sample&>(sample));
