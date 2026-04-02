@@ -131,7 +131,7 @@ TEST(common, environment_push_pop)
     common::set_env("ROCPROFILER_ENV_TEST_A", "0", 1);
     common::set_env("ROCPROFILER_ENV_TEST_B", "2", 1);
 
-    auto _store = env_store{{env_config{"ROCPROFILER_ENV_TEST_A", "1"},
+    auto _store = env_store{{env_config{"ROCPROFILER_ENV_TEST_A", "1", 1},
                              env_config{"ROCPROFILER_ENV_TEST_B", "2", 1},
                              env_config{"ROCPROFILER_ENV_TEST_C", "3", 0}}};
 
@@ -157,4 +157,31 @@ TEST(common, environment_push_pop)
         EXPECT_EQ(get_env("ROCPROFILER_ENV_TEST_B", 0), 2) << fmt::format("iteration={}", i);
         EXPECT_EQ(get_env("ROCPROFILER_ENV_TEST_C", 0), 0) << fmt::format("iteration={}", i);
     }
+}
+
+TEST(common, environment_no_overwrite)
+{
+    using rocprofiler::common::env_config;
+    using rocprofiler::common::env_store;
+    using rocprofiler::common::get_env;
+
+    // Pre-set environment variables to simulate user-provided values
+    setenv("ROCPROFILER_ENV_TEST_NO_OVR", "user_value", 1);
+
+    // Create env_store with overwrite=0 (should not replace existing values)
+    auto _store = env_store{{env_config{"ROCPROFILER_ENV_TEST_NO_OVR", "lib_value", 0}}};
+
+    EXPECT_TRUE(_store.push());
+
+    // Value should remain "user_value" since overwrite=0
+    EXPECT_EQ(get_env("ROCPROFILER_ENV_TEST_NO_OVR", std::string{}),
+              std::string_view{"user_value"});
+
+    EXPECT_TRUE(_store.pop());
+
+    // After pop, value should still be the original "user_value"
+    EXPECT_EQ(get_env("ROCPROFILER_ENV_TEST_NO_OVR", std::string{}),
+              std::string_view{"user_value"});
+
+    unsetenv("ROCPROFILER_ENV_TEST_NO_OVR");
 }

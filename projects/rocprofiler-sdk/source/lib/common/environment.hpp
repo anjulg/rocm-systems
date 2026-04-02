@@ -132,7 +132,7 @@ env_store::env_store(ContainerT<env_config, TailT...>&& _container)
     for(const auto& itr : _container)
     {
         m_original.emplace_back(env_config{itr.env_name, get_env(itr.env_name, ""), 1});
-        m_modified.emplace_back(env_config{itr.env_name, itr.env_value, 1});
+        m_modified.emplace_back(env_config{itr.env_name, itr.env_value, itr.overwrite});
     }
 }
 }  // namespace common
