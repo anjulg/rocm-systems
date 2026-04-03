@@ -373,7 +373,6 @@ __device__ uint64_t QueuePair::mlx5_post_wqe_amo([[maybe_unused]] int32_t length
                    raddr, rkey,
                    static_cast<uint64_t>(atomic_data), static_cast<uint64_t>(atomic_cmp),
                    reinterpret_cast<uintptr_t>(atomic_laddr), atomic_lkey};
-  uint64_t ret_val = 0;
 
   // copy to SQ
   mlx5_sq.buf[sq_idx] = wqe;
@@ -394,11 +393,7 @@ __device__ uint64_t QueuePair::mlx5_post_wqe_amo([[maybe_unused]] int32_t length
     }
   }
 
-  if (fetching) {
-    ret_val = __hip_atomic_load(atomic_laddr, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
-  }
-
-  return ret_val;
+  return fetching ? *atomic_laddr : 0;
 }
 
 // called with all active lanes using different QPs
@@ -427,7 +422,6 @@ __device__ uint64_t QueuePair::mlx5_post_wqe_amo_single([[maybe_unused]] int32_t
                    raddr, rkey,
                    static_cast<uint64_t>(atomic_data), static_cast<uint64_t>(atomic_cmp),
                    reinterpret_cast<uintptr_t>(atomic_laddr), atomic_lkey};
-  uint64_t ret_val = 0;
 
   // copy to SQ
   mlx5_sq.buf[sq_idx] = wqe;
@@ -444,10 +438,9 @@ __device__ uint64_t QueuePair::mlx5_post_wqe_amo_single([[maybe_unused]] int32_t
   // wait until fetch completes
   if (fetching) {
     mlx5_quiet_single();
-    ret_val = __hip_atomic_load(atomic_laddr, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_SYSTEM);
   }
 
-  return ret_val;
+  return fetching ? *atomic_laddr : 0;
 }
 
 }  // namespace rocshmem
