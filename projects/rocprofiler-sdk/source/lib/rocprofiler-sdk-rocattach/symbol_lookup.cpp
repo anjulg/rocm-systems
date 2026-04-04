@@ -34,7 +34,10 @@
 #include <dlfcn.h>
 #include <link.h>
 
+#include <array>
+#include <fstream>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 

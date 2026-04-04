@@ -39,6 +39,7 @@
 #include <fmt/ranges.h>
 
 #include <dlfcn.h>
+#include <fstream>
 #include <initializer_list>
 #include <unordered_map>
 
