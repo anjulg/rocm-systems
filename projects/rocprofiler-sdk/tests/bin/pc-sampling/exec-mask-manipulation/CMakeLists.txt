@@ -36,8 +36,8 @@ set_source_files_properties(exec_mask_manipulation.cpp PROPERTIES LANGUAGE HIP)
 add_executable(exec-mask-manipulation)
 target_sources(exec-mask-manipulation PRIVATE exec_mask_manipulation.cpp)
 # debug symbols required for PC sampling decoding validation
-target_compile_options(exec-mask-manipulation PRIVATE -W -Wall -Wextra -Wpedantic
-                                                      -Wshadow -Werror -g)
+target_compile_options(exec-mask-manipulation PRIVATE -Wpedantic)
 
 find_package(Threads REQUIRED)
-target_link_libraries(exec-mask-manipulation PRIVATE Threads::Threads)
+target_link_libraries(exec-mask-manipulation PRIVATE Threads::Threads
+                                                     rocprofiler-sdk::tests-build-flags)
