@@ -30,7 +30,9 @@ target_include_directories(pcs_gfx9_test PRIVATE ${PCTEST_INCLUDE_DIR})
 target_link_libraries(
     pcs_gfx9_test
     PRIVATE rocprofiler-sdk::rocprofiler-sdk-common-library
-            rocprofiler-sdk::rocprofiler-sdk-static-library GTest::gtest
+            rocprofiler-sdk::rocprofiler-sdk-amd-comgr
+            rocprofiler-sdk::rocprofiler-sdk-static-library
+            GTest::gtest
             GTest::gtest_main)
 
 rocprofiler_add_unit_test(
@@ -50,7 +52,9 @@ target_include_directories(pcs_id_test PRIVATE ${PCTEST_INCLUDE_DIR})
 target_link_libraries(
     pcs_id_test
     PRIVATE rocprofiler-sdk::rocprofiler-sdk-common-library
-            rocprofiler-sdk::rocprofiler-sdk-static-library GTest::gtest
+            rocprofiler-sdk::rocprofiler-sdk-amd-comgr
+            rocprofiler-sdk::rocprofiler-sdk-static-library
+            GTest::gtest
             GTest::gtest_main)
 
 rocprofiler_add_unit_test(
@@ -72,7 +76,9 @@ target_include_directories(pcs_bench_test PRIVATE ${PCTEST_INCLUDE_DIR})
 target_link_libraries(
     pcs_bench_test
     PRIVATE rocprofiler-sdk::rocprofiler-sdk-common-library
-            rocprofiler-sdk::rocprofiler-sdk-static-library GTest::gtest
+            rocprofiler-sdk::rocprofiler-sdk-amd-comgr
+            rocprofiler-sdk::rocprofiler-sdk-static-library
+            GTest::gtest
             GTest::gtest_main)
 
 add_executable(pcs_thread_test)
@@ -85,7 +91,9 @@ target_include_directories(pcs_thread_test PRIVATE ${PCTEST_INCLUDE_DIR})
 target_link_libraries(
     pcs_thread_test
     PRIVATE rocprofiler-sdk::rocprofiler-sdk-common-library
-            rocprofiler-sdk::rocprofiler-sdk-static-library GTest::gtest
+            rocprofiler-sdk::rocprofiler-sdk-amd-comgr
+            rocprofiler-sdk::rocprofiler-sdk-static-library
+            GTest::gtest
             GTest::gtest_main)
 
 rocprofiler_add_unit_test(
@@ -106,7 +114,9 @@ target_include_directories(pcs_gfx12_test PRIVATE ${PCTEST_INCLUDE_DIR})
 target_link_libraries(
     pcs_gfx12_test
     PRIVATE rocprofiler-sdk::rocprofiler-sdk-common-library
-            rocprofiler-sdk::rocprofiler-sdk-static-library GTest::gtest
+            rocprofiler-sdk::rocprofiler-sdk-amd-comgr
+            rocprofiler-sdk::rocprofiler-sdk-static-library
+            GTest::gtest
             GTest::gtest_main)
 
 rocprofiler_add_unit_test(
