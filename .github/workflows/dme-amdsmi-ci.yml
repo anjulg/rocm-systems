@@ -164,19 +164,23 @@ jobs:
           cd "${{ env.DME_DIR }}"
 
           # Selectively clone only public submodules (skip libgimsmi)
-          git submodule update --init --depth 1 gpuagent libamdsmi || true
+          # Use --recursive for gpuagent to get its third-party dependencies
+          git submodule update --init --depth 1 --recursive gpuagent libamdsmi || true
 
           # Verify gpu-agent submodule was cloned
           if [ ! -d "${{ env.DME_DIR }}/gpuagent/sw" ]; then
             echo "GPU Agent submodule not populated — cloning separately"
             rm -rf "${{ env.DME_DIR }}/gpuagent"
-            git clone --depth 1 \
+            git clone --depth 1 --recurse-submodules \
               -b "${{ env.GPU_AGENT_BRANCH }}" \
               "${{ env.GPU_AGENT_REPO }}" "${{ env.DME_DIR }}/gpuagent"
           fi
 
           echo "=== DME directory ==="
           ls "${{ env.DME_DIR }}/"
+
+          echo "=== GPU Agent third-party libs ==="
+          ls "${{ env.DME_DIR }}/gpuagent/sw/nic/third-party/" || echo "third-party dir not found"
 
       - name: Prepare GPU Agent Build Environment
         run: |
@@ -212,28 +216,6 @@ jobs:
           echo "::group::build-libs"
           make build-libs 2>&1 | tail -50
           echo "::endgroup::"
-
-      - name: Generate GPU Agent Protobuf Files
-        run: |
-          export PATH="/usr/local/go/bin:${HOME}/go/bin:${PATH}"
-          cd "${{ env.GPU_AGENT_WORKDIR }}/sw/nic/gpuagent"
-
-          # Generate protobuf files (try common make targets)
-          if grep -q "^gen:" Makefile 2>/dev/null; then
-            echo "Running make gen"
-            make gen
-          elif grep -q "^proto:" Makefile 2>/dev/null; then
-            echo "Running make proto"
-            make proto
-          elif grep -q "^generate:" Makefile 2>/dev/null; then
-            echo "Running make generate"
-            make generate
-          else
-            echo "::warning::No proto generation target found, may generate during build"
-          fi
-
-          # Verify gen/go exists or will be created
-          ls -la gen/ 2>/dev/null || echo "gen/ directory not yet created"
 
       - name: Build GPU Agent Binary
         timeout-minutes: 30
