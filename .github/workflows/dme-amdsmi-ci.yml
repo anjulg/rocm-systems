@@ -241,10 +241,9 @@ jobs:
           export PATH="/usr/local/go/bin:${HOME}/go/bin:${PATH}"
           cd "${{ env.GPU_AGENT_WORKDIR }}/sw/nic/gpuagent"
 
-          go mod vendor
-
+          # Don't vendor - let the Makefile handle proto generation and dependencies
           echo "::group::make gpuagent"
-          make gpuagent 2>&1 | tail -40
+          make gpuagent
           echo "::endgroup::"
 
           BLD_BIN="${{ env.GPU_AGENT_WORKDIR }}/sw/nic/build/x86_64/sim/bin"
