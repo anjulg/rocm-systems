@@ -140,15 +140,21 @@ jobs:
       # ────────────────────────────────────────────────────────
       - name: Clone Device Metrics Exporter
         run: |
-          git clone --recurse-submodules --depth 1 \
+          # Clone DME without submodules first
+          git clone --depth 1 \
             -b "${{ env.DME_BRANCH }}" \
             "${{ env.DME_REPO }}" "${{ env.DME_DIR }}"
+
+          cd "${{ env.DME_DIR }}"
+
+          # Selectively clone only public submodules (skip libgimsmi)
+          git submodule update --init --depth 1 gpuagent libamdsmi || true
 
           # Verify gpu-agent submodule was cloned
           if [ ! -d "${{ env.DME_DIR }}/gpuagent/sw" ]; then
             echo "GPU Agent submodule not populated — cloning separately"
             rm -rf "${{ env.DME_DIR }}/gpuagent"
-            git clone --recurse-submodules --depth 1 \
+            git clone --depth 1 \
               -b "${{ env.GPU_AGENT_BRANCH }}" \
               "${{ env.GPU_AGENT_REPO }}" "${{ env.DME_DIR }}/gpuagent"
           fi
