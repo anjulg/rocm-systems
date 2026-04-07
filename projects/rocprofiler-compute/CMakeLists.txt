@@ -665,6 +665,7 @@ if(${ENABLE_COVERAGE})
         test_profile_section
         test_profile_sets_func
         test_pc_sampling
+        test_pmc_data_cache
         test_analyze_commands
         test_analyze_workloads
         test_L1_cache_counters
