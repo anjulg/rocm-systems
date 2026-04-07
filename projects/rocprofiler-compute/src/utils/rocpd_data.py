@@ -5,7 +5,7 @@ import csv
 import sqlite3
 from contextlib import ExitStack, closing
 
-from utils.logger import console_error
+from utils.logger import console_error, console_warning
 
 # From schema definition in source/share/rocprofiler-sdk-rocpd/data_views.sql
 # in rocprofiler-sdk repository
@@ -55,6 +55,48 @@ TABLE_NAME_PREFIX_QUERY = (
     "AND name LIKE '{table_name_prefix}%'"
 )
 INSERT_QUERY = "INSERT INTO {table_name} ({columns}) VALUES ({placeholders})"
+STAGING_TABLE_NAME = "temp_rocpd_pmc_stage"
+DISPATCH_MAP_TABLE_NAME = "temp_rocpd_dispatch_event_map"
+STAGING_INSERT_QUERY = (
+    f"INSERT INTO {STAGING_TABLE_NAME} (dispatch_id, pmc_id, value) VALUES (?, ?, ?)"
+)
+STAGING_CLEAR_QUERY = f"DELETE FROM {STAGING_TABLE_NAME}"
+STAGING_CREATE_QUERY = f"""
+CREATE TEMP TABLE IF NOT EXISTS {STAGING_TABLE_NAME} (
+    dispatch_id TEXT,
+    pmc_id TEXT,
+    value TEXT
+)
+"""
+DISPATCH_MAP_CREATE_QUERY = f"""
+CREATE TEMP TABLE IF NOT EXISTS {DISPATCH_MAP_TABLE_NAME} (
+    dispatch_id TEXT PRIMARY KEY,
+    event_id INTEGER NOT NULL
+)
+"""
+DISPATCH_MAP_LOAD_QUERY = (
+    f"INSERT INTO {DISPATCH_MAP_TABLE_NAME} (dispatch_id, event_id) "
+    "SELECT CAST(dispatch_id AS TEXT), event_id "
+    "FROM rocpd_kernel_dispatch WHERE guid = ?"
+)
+STAGING_TO_PMC_QUERY = """
+INSERT INTO {table_name} (event_id, pmc_id, value)
+SELECT
+    M.event_id,
+    CAST(S.pmc_id AS INTEGER),
+    CAST(S.value AS REAL)
+FROM
+    {staging_table_name} S
+    INNER JOIN {dispatch_map_table_name} M ON M.dispatch_id = S.dispatch_id
+"""
+UNMATCHED_STAGE_ROWS_QUERY = """
+SELECT COUNT(*)
+FROM
+    {staging_table_name} S
+    LEFT JOIN {dispatch_map_table_name} M ON M.dispatch_id = S.dispatch_id
+WHERE
+    M.event_id IS NULL
+"""
 
 
 def convert_dbs_to_csv(
@@ -98,7 +140,30 @@ def convert_dbs_to_csv(
                         )
 
 
-def update_rocpd_pmc_events(counter_info: list[dict], rocpd_db_path: str) -> None:
+def _flush_staged_pmc_rows(conn: sqlite3.Connection, table_name: str) -> int:
+    with closing(
+        conn.execute(
+            UNMATCHED_STAGE_ROWS_QUERY.format(
+                staging_table_name=STAGING_TABLE_NAME,
+                dispatch_map_table_name=DISPATCH_MAP_TABLE_NAME,
+            )
+        )
+    ) as cursor:
+        unmatched_rows = cursor.fetchone()
+    conn.execute(
+        STAGING_TO_PMC_QUERY.format(
+            table_name=table_name,
+            staging_table_name=STAGING_TABLE_NAME,
+            dispatch_map_table_name=DISPATCH_MAP_TABLE_NAME,
+        )
+    )
+    conn.execute(STAGING_CLEAR_QUERY)
+    return int(unmatched_rows[0]) if unmatched_rows else 0
+
+
+def update_rocpd_pmc_events(
+    counter_csv_path: str, rocpd_db_path: str, chunk_size: int = 50000
+) -> None:
     """Updates pmc_event table in the given rocpd database path."""
     try:
         with closing(sqlite3.connect(rocpd_db_path)) as conn:
@@ -115,51 +180,55 @@ def update_rocpd_pmc_events(counter_info: list[dict], rocpd_db_path: str) -> Non
                 console_error("No pmc_event table found in the rocpd database")
             table_name = table_name[0]
 
-            # get pmc_event table data
             guid = table_name[len(ROCPD_PMC_EVENT_TABLE_NAME_PREFIX) :].replace(
                 "_", "-"
             )
-            # Map dispatch_id to event_id from rocpd_kernel_dispatch
-            # Native counter collection CSV has dispatch_id, but schema needs event_id
-            # event_id may differ from dispatch_id when marker API tracing is enabled
-            with closing(conn.execute(KERNEL_DISPATCH_QUERY, (guid,))) as cursor:
-                db_rows = cursor.fetchall()
-            if not db_rows:
-                console_error("No kernel dispatch data found.")
-                return
-            # DB output (numeric) converted to str to align with counter_info
-            dispatch_to_event = {
-                str(dispatch_id): str(event_id) for dispatch_id, event_id, _ in db_rows
-            }
-
-            # Map dispatch_id to event_id for each row
-            # Create new event_id column without destroying dispatch_id
-            for row in counter_info:
-                dispatch_id = row.get("dispatch_id")
-                row["event_id"] = dispatch_to_event.get(dispatch_id)
-
-            columns = ("guid", "event_id", "pmc_id", "value")
-            values = [
-                (
-                    guid,
-                    row.get("event_id"),
-                    row.get("counter_id"),
-                    row.get("counter_value"),
-                )
-                for row in counter_info
-            ]
-
-            # insert into pmc_event table
             with conn:
-                placeholders = ", ".join(["?"] * len(columns))
-                conn.executemany(
-                    INSERT_QUERY.format(
-                        table_name=table_name,
-                        columns=", ".join(columns),
-                        placeholders=placeholders,
-                    ),
-                    values,
-                )
+                conn.execute(f"DROP TABLE IF EXISTS {STAGING_TABLE_NAME}")
+                conn.execute(f"DROP TABLE IF EXISTS {DISPATCH_MAP_TABLE_NAME}")
+                conn.execute(STAGING_CREATE_QUERY)
+                conn.execute(DISPATCH_MAP_CREATE_QUERY)
+                conn.execute(DISPATCH_MAP_LOAD_QUERY, (guid,))
+
+                with closing(
+                    conn.execute(f"SELECT COUNT(*) FROM {DISPATCH_MAP_TABLE_NAME}")
+                ) as cursor:
+                    dispatch_rows = cursor.fetchone()
+                if not dispatch_rows or dispatch_rows[0] == 0:
+                    console_error("No kernel dispatch data found.")
+                    return
+
+                unmatched_rows = 0
+                staged_rows: list[tuple[str | None, str | None, str | None]] = []
+
+                with open(counter_csv_path, newline="") as csv_file:
+                    reader = csv.DictReader(csv_file)
+                    for row in reader:
+                        staged_rows.append(
+                            (
+                                row.get("dispatch_id"),
+                                row.get("counter_id"),
+                                row.get("counter_value"),
+                            )
+                        )
+                        if len(staged_rows) >= chunk_size:
+                            conn.executemany(STAGING_INSERT_QUERY, staged_rows)
+                            unmatched_rows += _flush_staged_pmc_rows(conn, table_name)
+                            staged_rows.clear()
+
+                if staged_rows:
+                    conn.executemany(STAGING_INSERT_QUERY, staged_rows)
+                    unmatched_rows += _flush_staged_pmc_rows(conn, table_name)
+
+                conn.execute(f"DROP TABLE IF EXISTS {STAGING_TABLE_NAME}")
+                conn.execute(f"DROP TABLE IF EXISTS {DISPATCH_MAP_TABLE_NAME}")
+
+                if unmatched_rows:
+                    console_warning(
+                        f"Skipped {unmatched_rows} counter rows with no matching dispatch_id."
+                    )
+    except FileNotFoundError as e:
+        console_error(f"Counter CSV not found while updating pmc_event table: {e}")
     except OSError as e:
         console_error(f"Database error while updating pmc_event table: {e}")
     except Exception as e:

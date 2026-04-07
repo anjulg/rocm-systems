@@ -24,6 +24,8 @@ from utils.logger import (
     demarcate,
 )
 from utils.utils_analysis import (
+    create_pmc_perf_from_rocpd,
+    get_rocpd_db_paths,
     impute_counters_iteration_multiplex,
     is_workload_empty,
     merge_counters_spatial_multiplex,
@@ -453,21 +455,27 @@ class OmniAnalyze_Base:
         if format_rocprof == "rocpd":
             # Vertically concat (by rows) results_*.csv into pmc_perf.csv
             result_files = list(workload_dir.glob("results_*.csv"))
+            if result_files:
+                with open(output_file, "w", newline="") as outfile:
+                    writer = None
+                    for file in result_files:
+                        with open(file, newline="") as infile:
+                            reader = csv.reader(infile)
+                            header = next(reader)
+                            # Write header only once
+                            if writer is None:
+                                writer = csv.writer(outfile)
+                                writer.writerow(header)
+                            for row in reader:
+                                writer.writerow(row)
 
-            with open(output_file, "w", newline="") as outfile:
-                writer = None
-                for file in result_files:
-                    with open(file, newline="") as infile:
-                        reader = csv.reader(infile)
-                        header = next(reader)
-                        # Write header only once
-                        if writer is None:
-                            writer = csv.writer(outfile)
-                            writer.writerow(header)
-                        for row in reader:
-                            writer.writerow(row)
-
-            console_debug(f"Created file: {output_file}")
+                console_debug(f"Created file: {output_file}")
+            elif not create_pmc_perf_from_rocpd(workload_dir, Path(output_file)):
+                console_warning(
+                    "join_prof",
+                    f"No rocpd results found in {workload_dir}.",
+                )
+                return None
 
             if iteration_multiplexing is not None:
                 df = pd.read_csv(output_file)
@@ -676,9 +684,20 @@ class OmniAnalyze_Base:
             pmc_perf = directory / "pmc_perf.csv"
             pmc_perf_files = list(directory.glob("pmc_perf_*.csv"))
             results_files = list(directory.glob("results_*.csv"))
+            rocpd_db_files = (
+                get_rocpd_db_paths(directory) if self._profiling_config.get("format_rocprof_output") == "rocpd" else []
+            )
 
             if pmc_perf.exists():
                 console_debug(f"Using existing {pmc_perf}")
+            elif rocpd_db_files:
+                console_log(f"Creating {pmc_perf} from rocpd database(s) for {directory}...")
+                if create_pmc_perf_from_rocpd(directory, pmc_perf):
+                    console_log(f"Created {pmc_perf}")
+                else:
+                    console_error(
+                        f"No counter data found in rocpd database(s) for {directory}."
+                    )
             elif pmc_perf_files or results_files:
                 files_desc = "pmc_perf_*.csv" if pmc_perf_files else "results_*.csv"
                 console_log(f"Joining {files_desc} for {directory}...")
@@ -687,7 +706,7 @@ class OmniAnalyze_Base:
             else:
                 console_error(
                     f"No profiling data found in {directory}.\n"
-                    f"Expected: pmc_perf.csv or pmc_perf_*.csv or results_*.csv\n"
+                    f"Expected: pmc_perf.csv or pmc_perf_*.csv or results_*.csv or *.db\n"
                     f"Please run 'rocprof-compute profile' first."
                 )
 

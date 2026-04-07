@@ -50,6 +50,22 @@ def _classify_output_line(line: str) -> None:
         console_error(line, exit=False)
 
 
+def _persist_rocpd_dbs(
+    workload_dir: str, fbase: str, retain_rocpd_output: bool
+) -> list[str]:
+    persisted_paths: list[str] = []
+    for db_path in glob.glob(workload_dir + "/out/pmc_1/*/*.db"):
+        pid = Path(db_path).stem.split("_")[0]
+        dst_path = workload_dir + f"/{fbase}_{pid}.db"
+        shutil.copyfile(db_path, dst_path)
+        persisted_paths.append(dst_path)
+        if retain_rocpd_output:
+            console_warning(f"Retaining raw rocpd database: {dst_path}")
+        else:
+            console_debug(f"Retained raw rocpd database: {dst_path}")
+    return persisted_paths
+
+
 def run_prof(
     fnames: Union[list[str], str],
     profiler_options: Union[list[str], dict[str, Union[str, list[str]]]],
@@ -201,90 +217,25 @@ def run_prof(
     results_files: list[str] = []
 
     if format_rocprof_output == "rocpd":
+        rocpd_db_paths = glob.glob(workload_dir + "/out/pmc_1/*/*.db")
         # If using native tool for counter collection
         if (
             get_rocprof_cmd() == "rocprofiler-sdk"
             and options["ROCPROF_COUNTER_COLLECTION"] == "0"
         ):
-            for db_name in glob.glob(workload_dir + "/out/pmc_1/*/*.db"):
+            for db_name in rocpd_db_paths:
                 pid = Path(db_name).stem.split("_")[0]
-                # Read CSV as list of dicts instead of pandas DataFrame
-                counter_rows, _ = csv_ops.read_csv_as_dicts(
-                    f"{workload_dir}/out/pmc_1/{pid}_native_counter_collection.csv"
-                )
                 rocpd_data.update_rocpd_pmc_events(
-                    counter_rows,
+                    f"{workload_dir}/out/pmc_1/{pid}_native_counter_collection.csv",
                     db_name,
                 )
                 console_debug(f"Updated rocpd db {db_name} with native tool counters.")
-        # Write results_fbase.csv
-        rocpd_data.convert_dbs_to_csv(
-            glob.glob(workload_dir + "/out/pmc_1/*/*.db"),
-            workload_dir + f"/out/pmc_1/{fbase}_counter_collection.csv",
-            workload_dir + f"/out/pmc_1/{fbase}_marker_api_trace.csv",
-        )
-        # Subprocess succeeded but may have dispatched zero GPU kernels,
-        # in which case the CSV is missing or has no data rows.
-        try:
-            combined_rows, _ = csv_ops.read_csv_as_dicts(
-                workload_dir + f"/out/pmc_1/{fbase}_counter_collection.csv"
-            )
-        except (FileNotFoundError, ValueError):
-            combined_rows = []
-        if not combined_rows:
+        persisted_db_paths = _persist_rocpd_dbs(workload_dir, fbase, retain_rocpd_output)
+        if not persisted_db_paths:
             console_warning(
-                "No GPU kernel data collected. "
+                "No rocpd database found after profiling. "
                 "The workload may not have dispatched any GPU kernels."
             )
-            shutil.rmtree(f"{workload_dir}/out", ignore_errors=True)
-            return
-        else:
-            # Reset Dispatch_ID based on PID, Kernel_Name, Grid_Size,
-            # Workgroup_Size, LDS_Per_Workgroup, Start_Timestamp, End_Timestamp
-            csv_ops.assign_group_ids(
-                combined_rows,
-                [
-                    "PID",
-                    "Kernel_Name",
-                    "Grid_Size",
-                    "Workgroup_Size",
-                    "LDS_Per_Workgroup",
-                    "Start_Timestamp",
-                    "End_Timestamp",
-                ],
-                "Dispatch_ID",
-            )
-            # Reset Kernel_ID based on Kernel_Name, Grid_Size,
-            # Workgroup_Size, LDS_Per_Workgroup
-            csv_ops.assign_group_ids(
-                combined_rows,
-                ["Kernel_Name", "Grid_Size", "Workgroup_Size", "LDS_Per_Workgroup"],
-                "Kernel_ID",
-            )
-            # Drop PID since its not required
-            csv_ops.drop_column_from_rows(combined_rows, "PID")
-            # Write back to CSV
-            csv_ops.write_csv_from_dicts(
-                workload_dir + f"/out/pmc_1/{fbase}_counter_collection.csv",
-                combined_rows,
-            )
-            csv_ops.write_csv_from_dicts(
-                workload_dir + f"/results_{fbase}.csv", combined_rows
-            )
-        if torch_trace_enabled:
-            # move counter collection and marker trace to workload dir
-            save_torch_trace_inputs(workload_dir, fbase, format_rocprof_output)
-        if retain_rocpd_output:
-            for db_path in glob.glob(workload_dir + "/out/pmc_1/*/*.db"):
-                pid = Path(db_path).stem.split("_")[0]
-                shutil.copyfile(
-                    db_path,
-                    workload_dir + f"/{fbase}_{pid}.db",
-                )
-                console_warning(
-                    f"Retaining large raw rocpd database: "
-                    f"{workload_dir}/{fbase}_{pid}.db"
-                )
         # Remove temp directory
         shutil.rmtree(workload_dir + "/" + "out")
         return

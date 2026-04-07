@@ -2,6 +2,7 @@
 # SPDX-License-Identifier:  MIT
 
 import shutil
+import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -9,6 +10,7 @@ from typing import Any, Optional
 import numpy as np
 import pandas as pd
 
+from utils import rocpd_data
 from utils.logger import (
     console_debug,
     console_error,
@@ -200,6 +202,80 @@ def build_call_trees_with_kernel_ids(
     return build_call_trees(consolidated_with_ids)
 
 
+def get_rocpd_db_paths(workload_dir: Path) -> list[Path]:
+    return sorted(path for path in workload_dir.glob("*.db") if path.is_file())
+
+
+def _read_rocpd_query_frames(db_paths: list[Path], query: str) -> list[pd.DataFrame]:
+    frames: list[pd.DataFrame] = []
+    for db_path in db_paths:
+        with sqlite3.connect(db_path) as conn:
+            df = pd.read_sql_query(query, conn)
+        if not df.empty:
+            frames.append(df)
+    return frames
+
+
+def create_pmc_perf_from_rocpd(workload_dir: Path, output_file: Path) -> bool:
+    db_paths = get_rocpd_db_paths(workload_dir)
+    if not db_paths:
+        return False
+
+    frames = _read_rocpd_query_frames(db_paths, rocpd_data.COUNTERS_COLLECTION_QUERY)
+    if not frames:
+        return False
+
+    combined_df = pd.concat(frames, ignore_index=True, copy=False)
+    if combined_df.empty:
+        return False
+
+    combined_df["Dispatch_ID"] = combined_df.groupby(
+        [
+            "PID",
+            "Kernel_Name",
+            "Grid_Size",
+            "Workgroup_Size",
+            "LDS_Per_Workgroup",
+            "Start_Timestamp",
+            "End_Timestamp",
+        ],
+        sort=False,
+    ).ngroup()
+    combined_df["Kernel_ID"] = combined_df.groupby(
+        ["Kernel_Name", "Grid_Size", "Workgroup_Size", "LDS_Per_Workgroup"],
+        sort=False,
+    ).ngroup()
+    combined_df = combined_df.drop(columns=["PID"], errors="ignore")
+    combined_df.to_csv(output_file, index=False)
+    console_log(f"Created {output_file} from raw rocpd database(s)")
+    return True
+
+
+def create_torch_trace_csvs_from_rocpd(workload_dir: Path) -> bool:
+    db_paths = get_rocpd_db_paths(workload_dir)
+    if not db_paths:
+        return False
+
+    counter_frames = _read_rocpd_query_frames(
+        db_paths, rocpd_data.COUNTERS_COLLECTION_QUERY
+    )
+    marker_frames = _read_rocpd_query_frames(db_paths, rocpd_data.MARKER_API_TRACE_QUERY)
+    if not counter_frames or not marker_frames:
+        return False
+
+    counter_path = workload_dir / "torch_trace_rocpd_counter_collection.csv"
+    marker_path = workload_dir / "torch_trace_rocpd_marker_api_trace.csv"
+    pd.concat(counter_frames, ignore_index=True, copy=False).to_csv(
+        counter_path, index=False
+    )
+    pd.concat(marker_frames, ignore_index=True, copy=False).to_csv(
+        marker_path, index=False
+    )
+    console_log(f"Created {counter_path} from raw rocpd database(s)")
+    console_log(f"Created {marker_path} from raw rocpd database(s)")
+    return True
+
+
 @demarcate
 def process_torch_trace_output(
     workload_dir: str,
@@ -217,6 +293,11 @@ def process_torch_trace_output(
     marker_api_trace_csvs = list(
         Path(workload_dir).glob("**/torch_trace*_marker_api_trace.csv")
     )
+    if not marker_api_trace_csvs:
+        create_torch_trace_csvs_from_rocpd(Path(workload_dir))
+        marker_api_trace_csvs = list(
+            Path(workload_dir).glob("**/torch_trace*_marker_api_trace.csv")
+        )
     counter_collection_csvs = [
         markers_file.parent
         / markers_file.name.replace("_marker_api_trace.", "_counter_collection.")
@@ -347,6 +428,9 @@ def is_workload_empty(path: str) -> None:
         pmc_files = list(workload_dir.glob("pmc_perf_*.csv"))
         results_files = list(workload_dir.glob("results_*.csv"))
         files_to_check = pmc_files if pmc_files else results_files
+
+    if not files_to_check and get_rocpd_db_paths(workload_dir):
+        return
 
     if not files_to_check:
         console_error("analysis", "No profiling data found.")
