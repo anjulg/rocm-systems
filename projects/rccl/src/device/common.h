@@ -189,8 +189,17 @@ struct ncclShmemData {
   uint64_t barrier_pat;
 };
 
+#ifdef RCCL_DEVICE_LINKER
 __shared__ ncclShmemData ncclShmem;
 __shared__ ulong2 ncclShmemPerWarp[ncclShmemScratchWarpSize()*(NCCL_MAX_NTHREADS/WARP_SIZE)/sizeof(ulong2)];
+#else
+extern __shared__ ncclShmemData ncclShmem;
+#if __CUDA_ARCH__ >= 700
+  extern __shared__ ulong2 ncclShmemPerWarp[/*ncclShmemDynamicSize()/sizeof(ulong2)*/];
+#else
+  extern __shared__ ulong2 ncclShmemPerWarp[ncclShmemScratchWarpSize()*(NCCL_MAX_NTHREADS/WARP_SIZE)/sizeof(ulong2)];
+#endif
+#endif
 
 #ifdef ENABLE_FAULT_INJECTION
 __device__ inline void insert_random_delay_per_warp() {
