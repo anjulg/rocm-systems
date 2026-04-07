@@ -584,8 +584,8 @@ add_test(
     NAME test_pmc_data_cache
     COMMAND
         ${PYTHON_TEST_COMMAND} -m pytest ${STANDALONEBINARY_TEST_OPTION}
-        --junitxml=tests/test_pmc_data_cache.xml ${COV_OPTION} tests/test_pmc_data_cache.py
-        ${WORKING_DIR_OPTION}
+        --junitxml=tests/test_pmc_data_cache.xml ${COV_OPTION}
+        tests/test_pmc_data_cache.py ${WORKING_DIR_OPTION}
 )
 
 # -----------------------------------
