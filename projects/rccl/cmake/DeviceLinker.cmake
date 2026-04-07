@@ -29,7 +29,6 @@ message(STATUS "Device Linker: assembly-extract pipeline enabled")
 
 set(DEVICE_BUILD_DIR "${PROJECT_BINARY_DIR}/device_build")
 set(ASM_EXTRACT_DIR  "${PROJECT_SOURCE_DIR}/tools/asm_extract")
-set(SCRIPTS_DIR      "${PROJECT_SOURCE_DIR}/cmake/scripts")
 set(SPECIALIZED_DIR  "${GEN_DIR}/specialized")
 
 set(DL_CLANG "${ROCM_PATH}/bin/amdclang++")
@@ -75,7 +74,7 @@ list(APPEND DL_COMPILE_DEFS
   -DNCCL_MAJOR=${NCCL_MAJOR}
   -DNCCL_MINOR=${NCCL_MINOR}
   -DNCCL_PATCH=${NCCL_PATCH}
-  -DNCCL_VERSION_CODE=${NCCL_VERSION_CODE}
+  -DNCCL_VERSION_CODE=${NCCL_VERSION}
   -DROCM_VERSION=${ROCM_VERSION}
   -D__HIP_PLATFORM_AMD__=1
 )
@@ -103,16 +102,13 @@ set(DL_INCLUDE_DIRS
   -isystem${ROCM_PATH}/include
 )
 
-# fmt is needed by proxy_trace.h (included transitively from collectives.cc)
+# fmt is needed by proxy_trace.h (included transitively from collectives.cc).
+# Only add the include path for FetchContent-fetched fmt; system-installed
+# fmt headers are already in the compiler's default include path, and adding
+# them explicitly via -isystem breaks #include_next ordering in device-only
+# compilation (e.g., GCC's cmath can no longer find math.h).
 if(fmt_SOURCE_DIR)
   list(APPEND DL_INCLUDE_DIRS -isystem${fmt_SOURCE_DIR}/include)
-else()
-  get_target_property(_FMT_INC_DIRS fmt::fmt-header-only INTERFACE_INCLUDE_DIRECTORIES)
-  if(_FMT_INC_DIRS)
-    foreach(_dir ${_FMT_INC_DIRS})
-      list(APPEND DL_INCLUDE_DIRS -isystem${_dir})
-    endforeach()
-  endif()
 endif()
 
 # ---------------------------------------------------------------------------
