@@ -277,13 +277,19 @@ add_custom_command(
 # Link all device objects into device.elf
 # ===========================================================================
 set(DEVICE_ELF "${DEVICE_BUILD_DIR}/device.elf")
+set(DEVICE_LINK_RSP "${DEVICE_BUILD_DIR}/device_link.rsp")
+
+# Write object file list to a response file to avoid ARG_MAX limits
+# (860+ objects with long absolute paths can exceed the command-line limit).
+list(JOIN ALL_EXTRACTED_OBJS "\n" _extracted_objs_newline)
+file(GENERATE OUTPUT ${DEVICE_LINK_RSP}
+  CONTENT "${COMMON_DEVICE_OBJ}\n${_extracted_objs_newline}\n")
 
 add_custom_command(
   OUTPUT  ${DEVICE_ELF}
   COMMAND ${DL_LLD} -shared
     -o ${DEVICE_ELF}
-    ${COMMON_DEVICE_OBJ}
-    ${ALL_EXTRACTED_OBJS}
+    @${DEVICE_LINK_RSP}
   DEPENDS ${COMMON_DEVICE_OBJ} ${ALL_EXTRACTED_OBJS}
   COMMENT "DL link: device.elf"
   VERBATIM
