@@ -251,15 +251,14 @@ void Timestamp::ExtractSignalTiming(ProfilingSignal* signal,
 bool HsaAmdSignalHandler(hsa_signal_value_t value, void* arg) {
   Timestamp* ts = reinterpret_cast<Timestamp*>(arg);
 
+  VirtualGPU* const gpu = ts->gpu();
+
   ClPrint(amd::LOG_INFO, amd::LOG_SIG, "Handler: value(%d), timestamp(%p), handle(0x%lx)",
           static_cast<uint32_t>(value), arg,
           ts->HwProfiling() ? ts->Signals()[0]->signal_.handle : 0);
 
   // Save callback signal
   hsa_signal_t callback_signal = ts->GetCallbackSignal();
-
-  auto gpu = ts->gpu();
-  gpu->QueuedAsyncHandlers()--;
 
   bool isBlocking = ts->GetBlocking();
 
@@ -276,6 +275,7 @@ bool HsaAmdSignalHandler(hsa_signal_value_t value, void* arg) {
   }
 
   // Return false, so the callback will not be called again for this signal
+  gpu->QueuedAsyncHandlers()--;
   gpu->release();
   return false;
 }
@@ -499,7 +499,10 @@ hsa_signal_t VirtualGPU::HwQueueTracker::ActiveSignal(hsa_signal_value_t init_va
     // The signal was assigned to the global marker's event, hence runtime can't reuse it
     // and needs a new signal
     std::unique_ptr<ProfilingSignal> signal(new ProfilingSignal());
-    if ((signal != nullptr) && CreateSignal(signal.get())) {
+
+    // Ensure that signals of the same type are created with the same interrupt flag,
+    // as the tracking list depends on this for reuse.
+    if ((signal != nullptr) && CreateSignal(signal.get(), signal_list_[current_id_]->flags_.interrupt_)) {
       signal_list_[current_id_]->release();
       signal_list_[current_id_] = signal.release();
     } else {
@@ -581,6 +584,8 @@ hsa_signal_t VirtualGPU::HwQueueTracker::ActiveSignal(hsa_signal_value_t init_va
       hsa_status_t result = Hsa::signal_async_handler(
           prof_signal->signal_, HSA_SIGNAL_CONDITION_LT, init_value, &HsaAmdSignalHandler, ts);
       if (HSA_STATUS_SUCCESS != result) {
+        gpu_.QueuedAsyncHandlers()--;
+        ts->gpu()->release();
         LogError("hsa_amd_signal_async_handler() failed to set the handler!");
       } else {
         ClPrint(amd::LOG_INFO, amd::LOG_SIG,
@@ -2127,7 +2132,6 @@ void VirtualGPU::profilingEnd(bool clearHwEvent) {
     }
     timestamp_ = nullptr;
   }
-  assert(retainExternalSignals_ || Barriers().IsExternalSignalListEmpty());
 
   // Certain commands like map/unmap memory may not need hw_events as its not a
   // queue operation. In such cases clear already set events which may have been for sync
@@ -2483,6 +2487,46 @@ void VirtualGPU::submitSvmPrefetchAsync(amd::SvmPrefetchAsyncCommand& cmd) {
   } else {
     LogWarning("hsa_amd_svm_prefetch_async is ignored, because no HMM support");
   }
+  profilingEnd();
+}
+
+// ================================================================================================
+void VirtualGPU::SubmitSvmPrefetchBatchAsync(amd::SvmPrefetchBatchAsyncCommand& command) {
+  std::scoped_lock lock(execution());
+  profilingBegin(command);
+
+  auto wait_events = Barriers().WaitingSignal(HwQueueEngine::Unknown);
+  hsa_signal_t active = Barriers().ActiveSignal(command.Count(), timestamp_);
+
+  const bool enable_system_memory =
+      (dev().settings().hmmFlags_ & Settings::Hmm::EnableSystemMemory) != 0;
+
+  for (size_t idx = 0; idx < command.Count(); idx++) {
+    void* dev_ptr = command.DevicePointers()[idx];
+    size_t size = command.Sizes()[idx];
+    const roc::Device* target_dev = static_cast<const roc::Device*>(command.TargetDevices()[idx]);
+    bool cpu_access = target_dev == nullptr;
+
+    hsa_agent_t agent = (cpu_access || enable_system_memory) ? dev().getCpuAgent(CpuDeviceId)
+                                                             : target_dev->getBackendDevice();
+
+    hsa_status_t status = Hsa::svm_prefetch_async(dev_ptr, size, agent, wait_events.size(),
+                                                  wait_events.data(), active);
+    ClPrint(amd::LOG_DEBUG, amd::LOG_COPY,
+            "HSA prefetch batch async[%zu] dev_ptr=0x%zx, size=%zu, wait_event=0x%zx, "
+            "completion_signal=0x%zx",
+            idx, dev_ptr, size, wait_events.empty() ? 0 : wait_events[0].handle, active.handle);
+
+    if (status != HSA_STATUS_SUCCESS) {
+      Barriers().ResetCurrentSignal();
+      LogError("HSA prefetch batch async failed in batch operation");
+      command.setStatus(CL_INVALID_OPERATION);
+      profilingEnd();
+      return;
+    }
+  }
+
+  addSystemScope();
   profilingEnd();
 }
 
