@@ -795,6 +795,7 @@ target_compile_options(rccl PRIVATE -Werror=deprecated-copy-with-user-provided-c
 target_compile_options(rccl PRIVATE -Wno-format-nonliteral)
 target_compile_options(rccl PRIVATE -Wno-unused-function)
 if(ENABLE_DEVICE_LINKER)
+  target_compile_definitions(rccl PRIVATE RCCL_DEVICE_LINKER)
   target_compile_options(rccl PRIVATE --offload-host-only)
 else()
   target_compile_options(rccl PRIVATE -fgpu-rdc)
