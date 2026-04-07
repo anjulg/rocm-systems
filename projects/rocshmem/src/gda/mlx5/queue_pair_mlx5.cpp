@@ -249,7 +249,7 @@ __device__ void QueuePair::mlx5_poll_cq_until(uint16_t requested_available_slots
 }
 
 // precondition: called with all active lanes using different QPs
-__device__ void QueuePair::mlx5_quiet(ActiveWFInfo &wf_info) {
+__device__ void QueuePair::mlx5_quiet(const ActiveWFInfo& wf_info) {
   mlx5_poll_cq_until(mlx5_sq.depth);
 }
 
@@ -263,7 +263,7 @@ __device__ void QueuePair::mlx5_quiet_single() {
 
 // can be called with all active lanes using any number of different QPs, don't assume anything
 __device__ void QueuePair::mlx5_post_wqe_rma(int32_t length, uintptr_t laddr, uintptr_t raddr,
-                                             uint8_t opcode, ActiveWFInfo &wf_info) {
+                                             uint8_t opcode, const ActiveWFInfo& wf_info) {
   if (wf_info.is_pe_group_last) {
     // get SQ lock
     acquire_lock(&mlx5_sq.lock);
@@ -335,7 +335,7 @@ __device__ void QueuePair::mlx5_post_wqe_rma_single(int32_t length, uintptr_t la
 __device__ uint64_t QueuePair::mlx5_post_wqe_amo([[maybe_unused]] int32_t length,
                                                  uintptr_t raddr, uint8_t opcode,
                                                  int64_t atomic_data, int64_t atomic_cmp,
-                                                 bool fetching, ActiveWFInfo &wf_info) {
+                                                 bool fetching, const ActiveWFInfo& wf_info) {
   if (wf_info.is_pe_group_last) {
     // get SQ lock
     acquire_lock(&mlx5_sq.lock);

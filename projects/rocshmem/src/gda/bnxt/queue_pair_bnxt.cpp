@@ -197,7 +197,7 @@ __device__ void QueuePair::bnxt_poll_cq_until(uint32_t requested_available_slots
   } while (available_slots < requested_available_slots);
 }
 
-__device__ void QueuePair::bnxt_quiet(ActiveWFInfo &wf_info) {
+__device__ void QueuePair::bnxt_quiet(const ActiveWFInfo& wf_info) {
   bnxt_poll_cq_until(bnxt_sq.depth);
 }
 
@@ -275,7 +275,7 @@ __device__ void QueuePair::bnxt_write_rma_wqe(uintptr_t raddr, uintptr_t laddr, 
 }
 
 __device__ void QueuePair::bnxt_post_wqe_rma(int32_t length,
-    uintptr_t laddr, uintptr_t raddr, uint8_t opcode, ActiveWFInfo &wf_info) {
+    uintptr_t laddr, uintptr_t raddr, uint8_t opcode, const ActiveWFInfo& wf_info) {
   if (wf_info.is_pe_group_first) {
     lock(&bnxt_sq.lock);
   }
@@ -374,7 +374,7 @@ __device__ uint32_t QueuePair::bnxt_write_amo_wqe(uintptr_t raddr,
 
 __device__ uint64_t QueuePair::bnxt_post_wqe_amo(uintptr_t raddr,
     uint8_t opcode, int64_t atomic_data, int64_t atomic_cmp, bool fetching,
-    ActiveWFInfo &wf_info) {
+    const ActiveWFInfo& wf_info) {
   uint32_t atomic_idx = 0;
 
     if (wf_info.is_pe_group_first) {
