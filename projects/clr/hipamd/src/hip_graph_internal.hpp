@@ -1019,7 +1019,7 @@ class GraphExec : public amd::ReferenceCountedObject, public Graph {
                                       const std::vector<hip::Stream*>& streams,
                                       hipError_t* out_status = nullptr);
   hipError_t EnqueueSegment(const Segment& segment, hip::Stream* stream,
-                            amd::AccumulateCommand* accumulate, bool* out_attach_signal);
+                            amd::AccumulateCommand* accumulate, bool pre_patched = false);
 
   bool TopologicalOrder() { return Graph::TopologicalOrder(topoOrder_); }
   //! Update streams for the graph execution with launch stream from application
@@ -1068,6 +1068,7 @@ class GraphExec : public amd::ReferenceCountedObject, public Graph {
       size_t startIndex;    // Start index in dispatchPackets
       size_t packetCount;   // Number of packets for this node
       bool enabled;         // Node enabled state (checked during dispatch)
+      bool captured;        // Whether this node was AQL-captured (false = individual execution)
     };
     std::vector<NodeRange> nodeRanges;
     std::unordered_map<GraphNode*, size_t> nodeToRangeIndex;  // O(1) lookup
@@ -1084,6 +1085,7 @@ class GraphExec : public amd::ReferenceCountedObject, public Graph {
     int segment_id;           // Segment this batch belongs to
     std::vector<bool> node_capture_status; // Capture status for each node in this segment
     std::vector<PacketBatch> packet_batches; // All packet batches for this segment
+    bool has_uncaptured_nodes = false;  // At least one node was not AQL-captured
 
     SegmentBatch(int seg_id) : segment_id(seg_id) {}
   };
@@ -1091,6 +1093,28 @@ class GraphExec : public amd::ReferenceCountedObject, public Graph {
   //! Batches of accumulated packets and kernel names for batch dispatch optimization
   //! Map from segment ID to SegmentBatch for O(1) lookup
   std::unordered_map<int, SegmentBatch> segmentBatches_;
+
+  struct SegmentSyncInfo {
+    int segment_id;
+    int hw_event_index;
+    std::vector<int> barrier_dep_indices;
+  };
+
+  struct SyncPlan {
+    int num_hw_events = 0;
+    std::vector<SegmentSyncInfo> segment_sync;
+
+    std::vector<amd::Device::HwEventPatch> patch_list;
+    std::vector<uint8_t*> barrier_packets;
+
+    ~SyncPlan() {
+      for (auto* p : barrier_packets) { delete[] p; }
+    }
+  };
+
+  SyncPlan sync_plan_;
+
+  void BuildSyncPlan();
 };
 
 class ChildGraphNode : public GraphNode, public GraphExec {
@@ -1197,6 +1221,7 @@ class GraphKernelNode : public GraphNode {
   int globalWorkSizeX_remainder_;
   int globalWorkSizeY_remainder_;
   int globalWorkSizeZ_remainder_;
+  hipFunction_t resolvedFunc_ = nullptr;  //!< Cached resolved function to avoid redundant lookups
 
  public:
   bool HasHiddenHeap() const { return hasHiddenHeap_; }
@@ -1251,7 +1276,7 @@ class GraphKernelNode : public GraphNode {
   }
 
   virtual std::string GetLabel(hipGraphDebugDotFlags flag) override {
-    hipFunction_t func = getFunc(kernelParams_, dev_id_);
+    hipFunction_t func = resolvedFunc_ ? resolvedFunc_ : getFunc(kernelParams_, dev_id_);
     amd::Kernel* kernel = hip::asKernel(func);
     std::string label;
     char buffer[4096];
@@ -1324,6 +1349,7 @@ class GraphKernelNode : public GraphNode {
     if (!func) {
       return hipErrorInvalidDeviceFunction;
     }
+    resolvedFunc_ = func;
     amd::Kernel* kernel = hip::asKernel(func);
     if (parentGraph_ != nullptr && parentGraph_->IsSegmentSchedulingEnabled()) {
       auto device = g_devices[dev_id_]->devices()[0];
@@ -1466,9 +1492,13 @@ class GraphKernelNode : public GraphNode {
     if (!isEnabled_) {
       return hipSuccess;
     }
-    hipFunction_t func = getFunc(kernelParams_, dev_id_);
+    hipFunction_t func = resolvedFunc_;
     if (!func) {
-      return hipErrorInvalidDeviceFunction;
+      func = getFunc(kernelParams_, dev_id_);
+      if (!func) {
+        return hipErrorInvalidDeviceFunction;
+      }
+      resolvedFunc_ = func;
     }
     status = validateKernelParams(&kernelParams_, func, dev_id_);
     if (hipSuccess != status) {

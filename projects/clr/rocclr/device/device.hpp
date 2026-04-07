@@ -1321,7 +1321,9 @@ class VirtualDevice : public amd::ReferenceCountedObject {
   virtual bool dispatchAqlPacketBatch(const std::vector<uint8_t*>& packets,
                                       const std::vector<const std::string*>& kernelNames,
                                       amd::AccumulateCommand* vcmd = nullptr,
-                                      bool attach_signal = false) = 0;
+                                      bool attach_signal = false,
+                                      bool pre_patched = false) = 0;
+
   //! Returns the number of outstanding HSA async handlers
   std::atomic<uint64_t>& QueuedAsyncHandlers() const { return queued_async_handlers_; }
 
@@ -2033,6 +2035,20 @@ class Device : public RuntimeObject {
 
   virtual void ReleaseGlobalSignal(void* signal) const {}
   virtual void RetainGlobalSignal(void* signal) const {}
+
+  virtual bool CreateHwEvents(int count, std::vector<void*>& hw_events) const { return false; }
+  virtual void DestroyHwEvent(void* hw_event) const {}
+
+  struct HwEventPatch {
+    uint8_t* packet;
+    int hw_event_index;
+    int dep_slot;  // -1 = completion_signal, 0-4 = dep_signal[slot]
+  };
+
+  virtual uint8_t* CreateBarrierPacket() const { return nullptr; }
+  virtual void ApplyHwEventPatches(const std::vector<HwEventPatch>& patches,
+                                   const std::vector<void*>& hw_events) const {}
+
   virtual const bool isFineGrainSupported() const {
     return (info().svmCapabilities_ & CL_DEVICE_SVM_ATOMICS) != 0 ? true : false;
   }
