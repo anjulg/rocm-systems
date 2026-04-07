@@ -638,6 +638,12 @@ TEST(rocrtstFunc, Counted_Queue_Overflow_And_Wraparound_Test) {
   cq.CountedQueuesOverflowWrapAroundTest();
   RunCustomTestEpilog(&cq);
 }
+TEST(rocrtstFunc, CPQueue_OverSubscription) {
+    CountedQueuesTest cp;
+    RunCustomTestProlog(&cp);
+    cp.CPQueueOverSubscriptionTest();
+    RunCustomTestEpilog(&cp);
+}
 
 #ifdef HSA_ENABLE_AMDCUID_SUPPORT
 TEST(rocrtstFunc, Cuid_GPU_Validation_Test) {

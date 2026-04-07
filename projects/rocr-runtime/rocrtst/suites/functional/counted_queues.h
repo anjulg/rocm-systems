@@ -63,6 +63,20 @@ class CountedQueuesTest : public TestBase {
   /// @brief Test to verify ring buffer wrap around when more than queue_size number of 
   // AQL packets are enqueued
   void CountedQueuesOverflowWrapAroundTest();
+
+  /// @brief Test to create at least twice the amount of CP queues to force over-subscription
+  // AQL packets and signals are enqueued
+  void CPQueueOverSubscriptionTest();
+private:
+  void FreeResources(std::vector<hsa_queue_t*>& queue, 
+                  std::vector<hsa_signal_t>& signals, 
+                  std::vector<void*>& src_addr, 
+                  std::vector<void*>& dst_addr, 
+                  std::vector<void*>& kernal_addr);
+  void FreeQueue(std::vector<hsa_queue_t*> & queue);
+  void FreeSignalAllocation(std::vector<hsa_signal_t> & signals);
+  void FreeMemoryPoolsAllocation(std::vector<void*> & addr);
+
 };
 
 #endif  // ROCRTST_SUITES_FUNCTIONAL_COUNTED_QUEUES_H

@@ -143,7 +143,7 @@ void CountedQueuesTest::CountedQueues_SamePriority_MaxLimitTest() {
   hw_ids.resize(std::distance(hw_ids.begin(), it));
 
   // Ensure hardware queue count matches MAX_HW_QUEUES
-  ASSERT_EQ(hw_ids.size(), MAX_HW_QUEUES);
+  ASSERT_EQ(hw_ids.size(), (uint32_t)MAX_HW_QUEUES);
 
   // Verify even distribution of logical queues over HW queues
   // Map HW ID -> use count
@@ -162,11 +162,11 @@ void CountedQueuesTest::CountedQueues_SamePriority_MaxLimitTest() {
     dist.push_back(kv.second);
   }
 
-  ASSERT_EQ(dist.size(), MAX_HW_QUEUES);
+  ASSERT_EQ(dist.size(), (uint32_t)MAX_HW_QUEUES);
 
   // Fair distribution: difference should not exceed 1
   auto [min_it, max_it] = std::minmax_element(dist.begin(), dist.end());
-  EXPECT_LE(*max_it - *min_it, 1);
+  EXPECT_LE(*max_it - *min_it, (uint32_t)1);
 
   // Release queues
   for (auto* q : queues) {
@@ -300,16 +300,16 @@ void CountedQueuesTest::CountedQueuesAllPrioritiesLimitTest() {
   ASSERT_SUCCESS(hsa_amd_queue_get_info(high2, HSA_QUEUE_INFO_USE_COUNT, &high_use2));
   ASSERT_SUCCESS(hsa_amd_queue_get_info(high3, HSA_QUEUE_INFO_USE_COUNT, &high_use3));
 
-  EXPECT_EQ(low_use1, 2);
-  EXPECT_EQ(low_use2, 1);
+  EXPECT_EQ(low_use1, (uint32_t)2);
+  EXPECT_EQ(low_use2, (uint32_t)1);
   EXPECT_TRUE(low_use1 == low_use3);  // same HW queues, same ref count
 
-  EXPECT_EQ(norm_use1, 2);
-  EXPECT_EQ(norm_use2, 1);
+  EXPECT_EQ(norm_use1, (uint32_t)2);
+  EXPECT_EQ(norm_use2, (uint32_t)1);
   EXPECT_TRUE(norm_use1 == norm_use3);
 
-  EXPECT_EQ(high_use1, 2);
-  EXPECT_EQ(high_use2, 1);
+  EXPECT_EQ(high_use1, (uint32_t)2);
+  EXPECT_EQ(high_use2, (uint32_t)1);
   EXPECT_TRUE(high_use1 == high_use3);
 
   // Release all queues
@@ -861,4 +861,327 @@ void CountedQueuesTest::CountedQueuesOverflowWrapAroundTest() {
   EXPECT_EQ(maxId, (countedQueueSize.load() + 5) * kThreads - 1);
 
   hsa_amd_memory_pool_free(shared_src_buffer);
+}
+
+void CountedQueuesTest::FreeMemoryPoolsAllocation(std::vector<void*> & addr){
+  size_t n =  addr.size();
+  for (size_t i = 0; i < addr.size(); i++) {
+    hsa_amd_memory_pool_free(addr[i]);
+  }
+}
+void CountedQueuesTest::FreeSignalAllocation(std::vector<hsa_signal_t> & signals){
+  size_t n =  signals.size();
+  for (size_t i = 0; i < n; i++) {
+    if (signals[i].handle) {
+      hsa_signal_destroy(signals[i]);
+      signals[i].handle = 0;
+    }
+  }
+}
+
+void CountedQueuesTest::FreeQueue(std::vector<hsa_queue_t*> & queue){
+  for (size_t i = 0; i < queue.size(); i++) {
+        if (queue[i]) {
+      ASSERT_SUCCESS(hsa_queue_destroy(queue[i]));
+    }
+  }
+}
+void CountedQueuesTest::FreeResources(std::vector<hsa_queue_t*>& queue, 
+                  std::vector<hsa_signal_t>& signals, 
+                  std::vector<void*>& src_addr, 
+                  std::vector<void*>& dst_addr, 
+                  std::vector<void*>& kernal_addr){
+                    FreeQueue(queue);
+                    FreeSignalAllocation(signals);
+                    FreeMemoryPoolsAllocation(src_addr);
+                    FreeMemoryPoolsAllocation(dst_addr);
+                    FreeMemoryPoolsAllocation(kernal_addr);
+                  }
+
+void CountedQueuesTest::CPQueueOverSubscriptionTest(){
+  const int NUM_DISPATCHES_PER_QUEUE = 10;
+  const int BUFFER_SIZE = 256;
+
+  hsa_status_t err;
+
+  // Get system timestamp frequency for timeout calculation
+  uint64_t freq = 0;
+  err = hsa_system_get_info(HSA_SYSTEM_INFO_TIMESTAMP_FREQUENCY, reinterpret_cast<void*>(&freq));
+  ASSERT_EQ(err, HSA_STATUS_SUCCESS);
+
+  // Calculate 2 minute timeout in system timestamp units
+  uint64_t timeout_2min = freq * 60 * 2;
+
+  // Common setup - needed for kernel loading
+  ASSERT_SUCCESS(rocrtst::SetDefaultAgents(this));
+  ASSERT_SUCCESS(rocrtst::SetPoolsTypical(this));
+
+  // Load kernel
+  set_kernel_file_name("test_case_template_kernels.hsaco");
+  set_kernel_name("square");
+  ASSERT_SUCCESS(rocrtst::LoadKernelFromObjFile(this, gpu_device1()));
+
+  // find all gpu agents
+  std::vector<hsa_agent_t> gpus;
+  err = hsa_iterate_agents(rocrtst::IterateGPUAgents, &gpus);
+  ASSERT_EQ(err, HSA_STATUS_SUCCESS);
+
+  uint32_t num_cp_queues = 0;
+  uint32_t queue_size = 0;
+  ASSERT_GT(gpus.size(), (uint32_t)0);
+  ASSERT_SUCCESS(hsa_agent_get_info(gpus[0], (hsa_agent_info_t)HSA_AMD_AGENT_INFO_NUM_CP_QUEUES, &num_cp_queues));
+  ASSERT_SUCCESS(hsa_agent_get_info(gpus[0], HSA_AGENT_INFO_QUEUE_MAX_SIZE, &queue_size));
+
+  std::cout << " Number of CP Queues available: " << num_cp_queues
+            << ", queue_size: " << queue_size << std::endl;
+
+  // Create queues (2x the number of HW CP queues to test oversubscription)
+  int num_queues_to_create = num_cp_queues * 2;
+  std::vector<hsa_queue_t*> queues;
+  std::vector<hsa_signal_t> completion_signals;
+  std::vector<void*> src_buffers;
+  std::vector<void*> dst_buffers;
+  std::vector<void*> kernarg_addresses;
+
+  hsa_agent_t ag_list[2] = {*gpu_device1(), *cpu_device()};
+
+  std::cout << " Creating " << num_queues_to_create << " CP queues..." << std::endl;
+
+  // Create queues and allocate resources
+  for (int i = 0; i < num_queues_to_create; i++) {
+    hsa_queue_t* queue = nullptr;
+    err = hsa_queue_create(gpus[0], queue_size, HSA_QUEUE_TYPE_MULTI,
+                          nullptr, nullptr, UINT32_MAX, UINT32_MAX, &queue);
+    if (err == HSA_STATUS_SUCCESS) {
+      std::cout << "  Queue " << i << " created successfully" << std::endl;
+      queues.push_back(queue);
+    } else {
+      const char* msg = nullptr;
+      hsa_status_string(err, &msg);
+      std::cout << "  Queue " << i << " creation failed: " << msg << std::endl;
+      // Free Existing Queues, signals and address pools allocated.
+      FreeResources(queues,
+                    completion_signals,
+                    src_buffers,
+                    dst_buffers,
+                    kernarg_addresses);
+      ASSERT_EQ(err, HSA_STATUS_SUCCESS);
+    }
+
+    // Create completion signal for this queue
+    hsa_signal_t signal;
+    err = hsa_signal_create(1, 0, NULL, &signal);
+    if(err != HSA_STATUS_SUCCESS){
+      // Free Existing Queues, signals and address pools allocated.
+      FreeResources(queues,
+                    completion_signals,
+                    src_buffers,
+                    dst_buffers,
+                    kernarg_addresses);
+      ASSERT_EQ(err, HSA_STATUS_SUCCESS);
+    }else{
+      completion_signals.push_back(signal);
+    }
+
+    // Allocate source buffer
+    void* src_buffer = nullptr;
+    err = (hsa_amd_memory_pool_allocate(cpu_pool(), BUFFER_SIZE * sizeof(uint32_t), 0, &src_buffer));
+    if(err != HSA_STATUS_SUCCESS){
+      // Free Existing Queues, signals and address pools allocated.
+      FreeResources(queues,
+                    completion_signals,
+                    src_buffers,
+                    dst_buffers,
+                    kernarg_addresses);
+      ASSERT_EQ(err, HSA_STATUS_SUCCESS);
+    }
+    err = (hsa_amd_agents_allow_access(2, ag_list, NULL, src_buffer));
+    if(err != HSA_STATUS_SUCCESS){
+      // Free Existing Queues, signals and address pools allocated.
+      FreeResources(queues,
+                    completion_signals,
+                    src_buffers,
+                    dst_buffers,
+                    kernarg_addresses);
+      ASSERT_EQ(err, HSA_STATUS_SUCCESS);
+    }
+
+    // Initialize source data
+    for (uint32_t j = 0; j < BUFFER_SIZE; ++j) {
+      reinterpret_cast<uint32_t*>(src_buffer)[j] = j;
+    }
+    src_buffers.push_back(src_buffer);
+
+    // Allocate destination buffer
+    void* dst_buffer = nullptr;
+    err = (hsa_amd_memory_pool_allocate(cpu_pool(), BUFFER_SIZE * sizeof(uint32_t), 0, &dst_buffer));
+    if(err != HSA_STATUS_SUCCESS){
+      // Free Existing Queues, signals and address pools allocated.
+      FreeResources(queues,
+                    completion_signals,
+                    src_buffers,
+                    dst_buffers,
+                    kernarg_addresses);
+      ASSERT_EQ(err, HSA_STATUS_SUCCESS);
+    }
+    err = (hsa_amd_agents_allow_access(2, ag_list, NULL, dst_buffer));
+    if(err != HSA_STATUS_SUCCESS){
+      // Free Existing Queues, signals and address pools allocated.
+      FreeResources(queues,
+                    completion_signals,
+                    src_buffers,
+                    dst_buffers,
+                    kernarg_addresses);
+      ASSERT_EQ(err, HSA_STATUS_SUCCESS);
+    }
+    memset(dst_buffer, 0, BUFFER_SIZE * sizeof(uint32_t));
+    dst_buffers.push_back(dst_buffer);
+
+    // Prepare kernel arguments
+    struct __attribute__((aligned(16))) local_args_t {
+      uint32_t* dstArray;
+      uint32_t* srcArray;
+      uint32_t size;
+      uint32_t pad;
+      uint64_t global_offset_x;
+      uint64_t global_offset_y;
+      uint64_t global_offset_z;
+      uint64_t printf_buffer;
+      uint64_t default_queue;
+      uint64_t completion_action;
+    } local_args;
+
+    local_args.dstArray = reinterpret_cast<uint32_t*>(dst_buffer);
+    local_args.srcArray = reinterpret_cast<uint32_t*>(src_buffer);
+    local_args.size = BUFFER_SIZE;
+    local_args.global_offset_x = 0;
+    local_args.global_offset_y = 0;
+    local_args.global_offset_z = 0;
+    local_args.printf_buffer = 0;
+    local_args.default_queue = 0;
+    local_args.completion_action = 0;
+
+    // Allocate kernel arguments
+    void* kernarg_address = nullptr;
+    err = (hsa_amd_memory_pool_allocate(kern_arg_pool(), sizeof(local_args), 0, &kernarg_address));
+    if(err != HSA_STATUS_SUCCESS){
+      // Free Existing Queues, signals and address pools allocated.
+      FreeResources(queues,
+                    completion_signals,
+                    src_buffers,
+                    dst_buffers,
+                    kernarg_addresses);
+      ASSERT_EQ(err, HSA_STATUS_SUCCESS);
+    }
+    err = (hsa_amd_agents_allow_access(2, ag_list, NULL, kernarg_address));
+    if(err != HSA_STATUS_SUCCESS){
+      // Free Existing Queues, signals and address pools allocated.
+      FreeResources(queues,
+                    completion_signals,
+                    src_buffers,
+                    dst_buffers,
+                    kernarg_addresses);
+      ASSERT_EQ(err, HSA_STATUS_SUCCESS);
+    }
+    memcpy(kernarg_address, &local_args, sizeof(local_args));
+    kernarg_addresses.push_back(kernarg_address);
+  }
+
+  std::cout << " All " << num_queues_to_create << " queues created successfully!" << std::endl;
+  std::cout << " Dispatching " << NUM_DISPATCHES_PER_QUEUE << " kernels to each queue..." << std::endl;
+
+  // Dispatch kernels to all queues
+  for (int iteration = 0; iteration < NUM_DISPATCHES_PER_QUEUE; iteration++) {
+    for (size_t i = 0; i < queues.size(); i++) {
+      const uint32_t queue_mask = queues[i]->size - 1;
+
+      // Reserve a slot in the queue
+      uint64_t index = hsa_queue_add_write_index_relaxed(queues[i], 1);
+
+      // Get pointer to the reserved packet slot
+      hsa_kernel_dispatch_packet_t* queue_aql_packet =
+          &(reinterpret_cast<hsa_kernel_dispatch_packet_t*>(queues[i]->base_address))[index & queue_mask];
+
+      // Fill packet fields
+      queue_aql_packet->setup = 1;
+      queue_aql_packet->workgroup_size_x = BUFFER_SIZE;
+      queue_aql_packet->workgroup_size_y = 1;
+      queue_aql_packet->workgroup_size_z = 1;
+      queue_aql_packet->grid_size_x = BUFFER_SIZE;
+      queue_aql_packet->grid_size_y = 1;
+      queue_aql_packet->grid_size_z = 1;
+      queue_aql_packet->private_segment_size = 0;
+      queue_aql_packet->group_segment_size = 0;
+      queue_aql_packet->kernel_object = kernel_object();
+      queue_aql_packet->kernarg_address = kernarg_addresses[i];
+      queue_aql_packet->completion_signal = completion_signals[i];
+
+      // Write header for packet
+      uint32_t header = HSA_PACKET_TYPE_KERNEL_DISPATCH;
+      header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE;
+      header |= HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE;
+      __atomic_store_n(reinterpret_cast<uint16_t*>(&queue_aql_packet->header), header, __ATOMIC_RELEASE);
+
+      // Ring doorbell to notify GPU
+      hsa_signal_store_screlease(queues[i]->doorbell_signal, index);
+    }
+
+    // Wait for all queues to complete this iteration (with 2 minute timeout)
+    for (size_t i = 0; i < queues.size(); i++) {
+      hsa_signal_value_t result;
+      while ((result = hsa_signal_wait_scacquire(completion_signals[i], HSA_SIGNAL_CONDITION_LT, 1,
+                                                  timeout_2min, HSA_WAIT_STATE_ACTIVE)) != 0) {
+        // Check if we timed out
+        if (result >= 1) {
+            FreeResources(queues,
+                    completion_signals,
+                    src_buffers,
+                    dst_buffers,
+                    kernarg_addresses);
+            if(verbosity() > 0)
+                std::cerr << "ERROR: Queue " << i << " iteration " << iteration
+                    << " timed out after 2 minutes!" << std::endl;
+                    ASSERT_TRUE(false) << "Kernel dispatch timed out";
+        }
+      }
+
+      // Verify results - should be square of input (j*j)
+      bool results_valid = true;
+      for (uint32_t j = 0; j < BUFFER_SIZE; j++) {
+        if (reinterpret_cast<uint32_t*>(dst_buffers[i])[j] != j * j) {
+          results_valid = false;
+          std::cout << "  Queue " << i << " iteration " << iteration << " FAILED at index " << j
+                    << ": expected " << (j * j) << ", got "
+                    << reinterpret_cast<uint32_t*>(dst_buffers[i])[j] << std::endl;
+          break;
+        }
+      }
+
+      if (results_valid && verbosity() > 0) {
+        std::cout << "  Queue " << i << " iteration " << iteration << " executed successfully!" << std::endl;
+      }else{
+        FreeResources(queues,
+                    completion_signals,
+                    src_buffers,
+                    dst_buffers,
+                    kernarg_addresses);
+        ASSERT_TRUE(results_valid);
+      }
+      // Reset signal for next iteration
+      hsa_signal_store_screlease(completion_signals[i], 1);
+    }
+  }
+  
+
+  std::cout << " All " << (queues.size() * NUM_DISPATCHES_PER_QUEUE)
+            << " kernel dispatches completed and verified successfully!" << std::endl;
+
+  // Clean up - destroy all queues and free resources
+      FreeResources(queues,
+                    completion_signals,
+                    src_buffers,
+                    dst_buffers,
+                    kernarg_addresses);
+
+  std::cout << " Test completed successfully - all queues executed kernels correctly!" << std::endl;
 }

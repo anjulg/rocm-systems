@@ -2052,6 +2052,9 @@ hsa_status_t GpuAgent::GetInfo(hsa_agent_info_t attribute, void* value) const {
       memcpy(cuid, derived_cuid_, sizeof(derived_cuid_));
       break;
     }
+    case HSA_AMD_AGENT_INFO_NUM_CP_QUEUES:
+      *((uint8_t*)value) = properties_.NumCpQueues;
+      break;
     default:
       return HSA_STATUS_ERROR_INVALID_ARGUMENT;
       break;

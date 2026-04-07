@@ -727,6 +727,13 @@ typedef enum hsa_amd_agent_info_s {
    * of a CPU/GPU agent. The type of this attribute is uint8_t[16].
    */
   HSA_AMD_AGENT_INFO_CUID = 0xA11C,
+      /**
+   * Queries for number of CP Queues within the agent.
+   * The type of this attribute is uint32_t.
+   */
+  HSA_AMD_AGENT_INFO_NUM_CP_QUEUES = 0xA11D,
+
+
 } hsa_amd_agent_info_t;
 
 /**
