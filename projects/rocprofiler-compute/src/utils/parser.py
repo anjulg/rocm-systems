@@ -426,12 +426,43 @@ class CodeTransformer(ast.NodeTransformer):
         return node
 
 
+class PmcDataCache:
+    """Caches collection-level sub-DataFrame lookups from raw PMC data.
+
+    Wraps a raw_pmc_df (DataFrame with MultiIndex columns, or plain
+    dict) and caches the result of ``__getitem__`` calls.  This avoids
+    repeated multi-index column slicing when metric expressions
+    reference ``raw_pmc_df['pmc_perf']`` many times.
+    """
+
+    def __init__(self, raw_pmc_df: Union[pd.DataFrame, dict]) -> None:
+        self._raw_pmc_df = raw_pmc_df
+        self._cache: dict[str, Any] = {}
+
+    def __getitem__(self, key: str) -> pd.DataFrame:
+        if key not in self._cache:
+            self._cache[key] = self._raw_pmc_df[key]
+        return self._cache[key]
+
+    def get(
+        self, key: str, default: Optional[pd.DataFrame] = None
+    ) -> Optional[pd.DataFrame]:
+        """Return cached value for *key*, or *default* on miss."""
+        try:
+            return self[key]
+        except (KeyError, TypeError):
+            return default
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._raw_pmc_df
+
+
 class MetricEvaluator:
     """Encapsulates metric evaluation logic and eliminates global variables."""
 
     def __init__(
         self,
-        raw_pmc_df: Union[pd.DataFrame, dict],
+        raw_pmc_df: Union[pd.DataFrame, dict, "PmcDataCache"],
         sys_vars: dict[str, Any],
         empirical_peaks: dict[str, Any],
     ) -> None:
@@ -994,7 +1025,7 @@ def create_sys_vars(sys_info: pd.Series) -> dict[str, Union[int, float]]:
 
 
 def calc_builtin_vars(
-    raw_pmc_df: Union[pd.DataFrame, dict],
+    raw_pmc_df: Union[pd.DataFrame, dict, "PmcDataCache"],
     config: dict,
     sys_vars: dict[str, Union[int, float]],
 ) -> dict[str, Optional[Union[str, float, int]]]:
@@ -1061,26 +1092,28 @@ def eval_metric(
     Execute the expr string for each metric in the df.
     """
 
+    cached_pmc = PmcDataCache(raw_pmc_df)
+
     # confirm no illogical counter values (only consider non-roofline runs)
     roof_only_run = sys_info.ip_blocks == "roofline"
     if (
         (not roof_only_run)
-        and hasattr(raw_pmc_df.get("pmc_perf", {}), "GRBM_GUI_ACTIVE")
-        and (raw_pmc_df["pmc_perf"]["GRBM_GUI_ACTIVE"] == 0).any()
+        and hasattr(cached_pmc.get("pmc_perf", {}), "GRBM_GUI_ACTIVE")
+        and (cached_pmc["pmc_perf"]["GRBM_GUI_ACTIVE"] == 0).any()
     ):
         console_warning("Dectected GRBM_GUI_ACTIVE == 0")
-        console_error("Hauting execution for warning above.")
+        console_error("Halting execution for warning above.")
 
     sys_vars = create_sys_vars(sys_info)
     empirical_peaks = create_empirical_peaks_dict(empirical_peaks_df)
-    builtin_vars = calc_builtin_vars(raw_pmc_df, config, sys_vars)
+    builtin_vars = calc_builtin_vars(cached_pmc, config, sys_vars)
     sys_vars.update(builtin_vars)
 
     # Clear any previous noise clamp warnings before this analysis
     clear_noise_clamp_warnings()
 
     # Create metric evaluator
-    metric_evaluator = MetricEvaluator(raw_pmc_df, sys_vars, empirical_peaks)
+    metric_evaluator = MetricEvaluator(cached_pmc, sys_vars, empirical_peaks)
 
     exprs_to_eval = []
     debug_tracker = DebugRowTracker() if debug else None
