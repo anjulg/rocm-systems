@@ -427,26 +427,37 @@ class CodeTransformer(ast.NodeTransformer):
 
 
 class PmcDataCache:
-    """Caches collection-level sub-DataFrame lookups from raw PMC data.
+    """
+    Caches lookups from raw PMC data at every nesting level.
 
-    Wraps a raw_pmc_df (DataFrame with MultiIndex columns, or plain
-    dict) and caches the result of ``__getitem__`` calls.  This avoids
-    repeated multi-index column slicing when metric expressions
-    reference ``raw_pmc_df['pmc_perf']`` many times.
+    Wraps a raw_pmc_df (DataFrame with MultiIndex columns, plain dict,
+    or single-level DataFrame) and caches ``__getitem__`` results.
+    When a lookup returns a DataFrame, the result is itself wrapped in
+    a new ``PmcDataCache`` so that subsequent column access (e.g.
+    ``cache['pmc_perf']['SQ_WAVES']``) is also cached.  Series and
+    scalar results are stored directly.
+
+    Attribute access (e.g. ``.columns``, ``hasattr(cache, 'COL')``)
+    is delegated to the underlying data structure.
     """
 
     def __init__(self, raw_pmc_df: Union[pd.DataFrame, dict]) -> None:
         self._raw_pmc_df = raw_pmc_df
         self._cache: dict[str, Any] = {}
 
-    def __getitem__(self, key: str) -> pd.DataFrame:
+    def __getitem__(self, key: str) -> Union[pd.Series, "PmcDataCache"]:
         if key not in self._cache:
-            self._cache[key] = self._raw_pmc_df[key]
+            value = self._raw_pmc_df[key]
+            if isinstance(value, pd.DataFrame):
+                value = PmcDataCache(value)
+            self._cache[key] = value
         return self._cache[key]
 
     def get(
-        self, key: str, default: Optional[pd.DataFrame] = None
-    ) -> Optional[pd.DataFrame]:
+        self,
+        key: str,
+        default: Union[pd.Series, "PmcDataCache", None] = None,
+    ) -> Union[pd.Series, "PmcDataCache", None]:
         """Return cached value for *key*, or *default* on miss."""
         try:
             return self[key]
@@ -455,6 +466,9 @@ class PmcDataCache:
 
     def __contains__(self, key: object) -> bool:
         return key in self._raw_pmc_df
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+        return getattr(self._raw_pmc_df, name)
 
 
 class MetricEvaluator:
@@ -1137,7 +1151,7 @@ def eval_metric(
                                     expr,
                                     row[expr],
                                     metric_evaluator,
-                                    raw_pmc_df,
+                                    cached_pmc,
                                     show_inputs=debug_tracker.should_show_inputs(
                                         df_id, row_id
                                     ),
@@ -1165,14 +1179,14 @@ def eval_metric(
     print_noise_clamp_summary()
 
     # Check for metrics exceeding theoretical peak due to dual-issue
-    validate_dual_issue_metrics(dfs, dfs_type, sys_info, raw_pmc_df)
+    validate_dual_issue_metrics(dfs, dfs_type, sys_info, cached_pmc)
 
 
 def validate_dual_issue_metrics(
     dfs: dict,
     dfs_type: dict,
     sys_info: pd.Series,
-    raw_pmc_df: Union[pd.DataFrame, dict],
+    raw_pmc_df: Union[pd.DataFrame, dict, "PmcDataCache"],
 ) -> None:
     """
     Check if VALU Utilization or VALU FLOPs metrics exceed theoretical peak.
@@ -1211,7 +1225,11 @@ def validate_dual_issue_metrics(
                     (value / peak) * 100
                     dual_issue_confirmed = False
                     if gpu_arch == "gfx950":
-                        if isinstance(raw_pmc_df, dict) and "pmc_perf" in raw_pmc_df:
+                        has_pmc = (
+                            isinstance(raw_pmc_df, (dict, PmcDataCache))
+                            and "pmc_perf" in raw_pmc_df
+                        )
+                        if has_pmc:
                             pmc_df = raw_pmc_df["pmc_perf"]
                             if "SQ_ACTIVE_INST_VALU2" in pmc_df.columns:
                                 valu2_sum = pmc_df["SQ_ACTIVE_INST_VALU2"].sum()

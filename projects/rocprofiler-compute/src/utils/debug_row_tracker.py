@@ -38,7 +38,7 @@ import pandas as pd
 from utils.logger import console_warning
 
 if TYPE_CHECKING:
-    from utils.parser import MetricEvaluator
+    from utils.parser import MetricEvaluator, PmcDataCache
 
 
 _MAX_DEBUG_ROWS = 5
@@ -90,10 +90,14 @@ def _print_debug_global_vars(row_expr: str, metric_evaluator: MetricEvaluator) -
 
 
 def _extract_column_data(
-    table_key: str, col_name: str, raw_pmc_df: pd.DataFrame | dict
+    table_key: str,
+    col_name: str,
+    raw_pmc_df: pd.DataFrame | dict | PmcDataCache,
 ) -> Optional[list[Any]]:
-    """Extract column data from raw_pmc_df (dict or DataFrame)."""
-    if isinstance(raw_pmc_df, dict) and table_key in raw_pmc_df:
+    """Extract column data from raw_pmc_df (dict, DataFrame, or PmcDataCache)."""
+    from utils.parser import PmcDataCache
+
+    if isinstance(raw_pmc_df, (dict, PmcDataCache)) and table_key in raw_pmc_df:
         series = raw_pmc_df[table_key][col_name]
         return series.tolist() if hasattr(series, "tolist") else list(series)
     elif isinstance(raw_pmc_df, pd.DataFrame):
@@ -111,7 +115,8 @@ def _extract_column_data(
 
 
 def _collect_debug_column_data(
-    row_expr: str, raw_pmc_df: pd.DataFrame | dict
+    row_expr: str,
+    raw_pmc_df: pd.DataFrame | dict | PmcDataCache,
 ) -> tuple[list[tuple[str, Optional[list[Any]]]], int]:
     """Collect column data and compute alignment width for debug output."""
     matched_cols = re.findall(
@@ -162,7 +167,7 @@ def _print_debug_column_data(
 def _print_debug_inputs(
     row_expr: str,
     metric_evaluator: MetricEvaluator,
-    raw_pmc_df: pd.DataFrame | dict,
+    raw_pmc_df: pd.DataFrame | dict | PmcDataCache,
     show_inputs: bool,
 ) -> None:
     """Print input variables and column data for debug output."""
@@ -190,7 +195,7 @@ def debug_row_tracker(
     expr: str,
     row_expr: str,
     metric_evaluator: MetricEvaluator,
-    raw_pmc_df: pd.DataFrame | dict,
+    raw_pmc_df: pd.DataFrame | dict | PmcDataCache,
     *,
     show_inputs: bool = True,
 ) -> None:
@@ -200,7 +205,7 @@ def debug_row_tracker(
         expr: The original metric expression (for display purposes).
         row_expr: The fully substituted expression to evaluate.
         metric_evaluator: The MetricEvaluator instance for expression evaluation.
-        raw_pmc_df: Raw PMC data (DataFrame or dict).
+        raw_pmc_df: Raw PMC data (DataFrame, dict, or PmcDataCache).
         show_inputs: Whether to show input variable values (default: True).
     """
     print("~" * 40 + "\nExpression:")
