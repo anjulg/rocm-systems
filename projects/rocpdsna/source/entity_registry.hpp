@@ -31,6 +31,7 @@ struct entity_registry
     [[nodiscard]] auto& kernel_symbol_info() { return m_kernel_symbol_info; }
     [[nodiscard]] auto& track_info() { return m_track_info; }
     [[nodiscard]] auto& string_info() { return m_string_info; }
+    [[nodiscard]] auto& category_info() { return m_category_info; }
 
 private:
     entity_utility<std::unordered_set<writer_types::node_id_t>> m_node_info{};
@@ -70,6 +71,10 @@ private:
         m_track_info{};
 
     entity_utility<std::unordered_map<std::string, primary_key_t>> m_string_info{};
+
+    // Category info registry for v4 schema (categories stored in rocpd_info_category
+    // table)
+    entity_utility<std::unordered_map<std::string, primary_key_t>> m_category_info{};
 };
 
 }  // namespace rocpdsna

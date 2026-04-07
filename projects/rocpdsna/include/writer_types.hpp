@@ -84,6 +84,31 @@ using queue_id_t = size_t;
  */
 using track_name_t = std::string_view;
 
+// =============================================================================
+// v4+ ID Types
+// =============================================================================
+
+/*** @brief Category id - unique identifier for an event category  */
+using category_id_t = size_t;
+
+/*** @brief Address range id - unique identifier for an address range  */
+using address_range_id_t = size_t;
+
+/*** @brief Source code id - unique identifier for source code info  */
+using source_code_id_t = size_t;
+
+/*** @brief Program counter id - unique identifier for PC info  */
+using pc_id_t = size_t;
+
+/*** @brief Track id - unique identifier for a track record  */
+using track_id_t = size_t;
+
+/*** @brief Timestamp id - unique identifier for a timestamp record  */
+using timestamp_id_t = size_t;
+
+/*** @brief Event id - unique identifier for an event record  */
+using event_id_t = size_t;
+
 using timestamp_ns_t = size_t;
 
 constexpr std::string_view empty_json = "{}";
@@ -121,6 +146,7 @@ struct trace_environment_t
     std::optional<queue_id_t>        queue_id;
 
     std::optional<track_name_t> track_name;
+    std::optional<size_t>       ppid;
 };
 
 // --------------------- Info Tables ---------------------
@@ -143,6 +169,7 @@ struct node_info_t
     std::optional<std::string_view> version;
     std::optional<std::string_view> hardware_name;
     std::optional<std::string_view> domain_name;
+    std::optional<std::string_view> name;  // V4 - optional user provided name
 };
 
 /***
@@ -166,7 +193,8 @@ struct process_info_t
     std::string_view                environment = empty_json;
     std::string_view                extdata     = empty_json;
 
-    node_id_t node_id{};
+    node_id_t                       node_id{};
+    std::optional<std::string_view> name;  // V4 optional user provided name
 };
 
 /***
@@ -193,8 +221,9 @@ struct agent_info_t
     std::optional<std::string_view> user_name;
     std::string_view                extdata = empty_json;
 
-    node_id_t    node_id{};
-    process_id_t process_id{};
+    node_id_t                       node_id{};
+    process_id_t                    process_id{};
+    std::optional<std::string_view> generic_name;  ///< v4: Generic device name
 };
 
 struct pmc_info_unique_id_t
@@ -241,8 +270,9 @@ struct pmc_info_t
     size_t                          is_derived{};
     std::string_view                extdata = empty_json;
 
-    node_id_t    node_id{};
-    process_id_t process_id{};
+    node_id_t                       node_id{};
+    process_id_t                    process_id{};
+    std::optional<std::string_view> qualifier;
 };
 
 /***
@@ -366,18 +396,95 @@ struct kernel_symbol_info_t
     code_object_id_t code_obj_id{};
 };
 
+// =============================================================================
+// Info Tables -Latest version (Category, Address Range, Source Code, PC)
+// =============================================================================
+
 /***
- * @brief Track info
+ * @brief Category info
+ * @note Maps to rocpd_info_category table. Categories for filtering events
+ */
+// ANUJ_DONE
+struct category_info_t
+{
+    std::string_view name;  // Category name (NOT NULL)
+    std::string_view extdata = empty_json;
+};
+
+/***
+ * @brief Address range info
+ * @note Maps to rocpd_info_address_range table. Represents a memory address
+ * range within a loaded code object.
+ */
+// ANUJ_DONE -revisit
+struct address_range_info_t
+{
+    address_range_id_t id{};
+
+    size_t           address_base{};  // Base load address of code object
+    size_t           address_low{};   // Lower bound (>= base)
+    size_t           address_high{};  // Upper bound (>= low)
+    std::string_view extdata = empty_json;
+
+    node_id_t    node_id{};
+    process_id_t process_id{};
+};
+
+/***
+ * @brief Source code info
+ * @note Maps to rocpd_info_source_code table. Contains source code lines
+ * and assembly instructions for a code location.
+ */
+struct source_code_info_t
+{
+    source_code_id_t id{};
+
+    std::optional<std::string_view> file;                // Source file path
+    std::optional<size_t>           line_number;         // Starting line number
+    std::string_view                lines = empty_json;  // Source lines as JSON array
+    std::string_view                instructions = empty_json;  // Assembly as JSON array
+    std::string_view                extdata      = empty_json;
+
+    node_id_t                         node_id{};
+    process_id_t                      process_id{};
+    std::optional<address_range_id_t> address_id;  // Optional FK to address range
+};
+
+/***
+ * @brief Program counter info
+ * @note Maps to rocpd_info_pc table. Represents a program counter location
+ * with function, file, and line information.
+ */
+struct pc_info_t
+{
+    pc_id_t id{};
+
+    std::string_view                function;  // Function name (NOT NULL)
+    std::optional<std::string_view> file;      // Source file path
+    std::optional<size_t>           line;      // Line number
+    std::string_view                extdata = empty_json;
+
+    node_id_t                         node_id{};
+    process_id_t                      process_id{};
+    std::optional<address_range_id_t> address_id;  // Optional FK to address range
+};
+
+/***
+ * @brief Track info - maps to rocpd_track table
  * @note This is a struct which will be used to identify the track.
- * @param name Track name which will uniquely identify the track.
- * @param node_id Node id which will uniquely identify the node. Use this value to refer
- * to node_info.
- * @param process_id Process id which will uniquely identify the process. Use this
- * value to refer to process_info.
- * @param thread_id Thread id which will uniquely identify the thread.
+ * @param name Track name which will uniquely identify the track (maps to name_id via
+ * string table).
+ * @param node_id Node id which will uniquely identify the node (nid FK).
+ * @param ppid Parent process id (optional).
+ * @param process_id Process id (pid FK, optional).
+ * @param thread_id Thread id (tid FK, optional).
+ * @param agent_id Agent id (FK to agent, optional).
+ * @param queue_id Queue id (FK to queue, optional).
+ * @param stream_id Stream id (FK to stream, optional).
  */
 struct track_info_t
 {
+    // Original v3 fields
     std::optional<track_name_t> name;
     std::string_view            extdata = empty_json;
 
@@ -385,17 +492,25 @@ struct track_info_t
     std::optional<process_id_t> process_id;
     std::optional<thread_id_t>  thread_id;
 
+    // NEW v4 fields (added at end - all optional with defaults)
+    std::optional<size_t>            ppid;       // v4: parent process id
+    std::optional<agent_unique_id_t> agent_id;   // v4: agent_id FK
+    std::optional<queue_id_t>        queue_id;   // v4: queue_id FK
+    std::optional<stream_id_t>       stream_id;  // v4: stream_id FK
+
     bool operator==(const track_info_t& other) const noexcept
     {
         return name == other.name && node_id == other.node_id &&
-               process_id == other.process_id && thread_id == other.thread_id;
+               process_id == other.process_id && thread_id == other.thread_id &&
+               ppid == other.ppid && agent_id == other.agent_id &&
+               queue_id == other.queue_id && stream_id == other.stream_id;
     }
 };
 
 // --------------------- Data Tables ---------------------
 
 /***
- * @brief Function argument data for API tracing.
+ * @brief Function argument data for API tracing. rocpd_arg table in schema.
  */
 struct arg_data_t
 {
@@ -540,6 +655,10 @@ struct memory_alloc_data_t
     std::optional<size_t> address;            ///< Allocated memory address
     size_t                size{};             ///< Allocation size (bytes)
     std::string_view      extdata = empty_json;
+
+    std::optional<std::string_view> name;  ///< Operation name (maps to name_id, NOT NULL)
+    std::optional<std::string_view>
+        region_name;  ///< Region name (maps to region_name_id, nullable)
 };
 
 }  // namespace rocpdsna::writer_types
