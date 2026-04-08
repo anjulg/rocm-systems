@@ -3,6 +3,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from utils.metrics import MetricEvaluator, PmcDataCache
 
@@ -81,6 +82,42 @@ def test_pmc_data_cache_contains_and_get():
     assert isinstance(cache.get("pmc_perf"), PmcDataCache)
     assert cache.get("nonexistent") is None
     assert cache.get("nonexistent", "fallback") == "fallback"
+
+
+def test_pmc_data_cache_has_column_present():
+    cache = PmcDataCache(_make_pmc_dict())
+    assert cache.has_column("pmc_perf", "SQ_WAVES") is True
+
+
+def test_pmc_data_cache_has_column_missing_table():
+    cache = PmcDataCache(_make_pmc_dict())
+    assert cache.has_column("nonexistent", "SQ_WAVES") is False
+
+
+def test_pmc_data_cache_has_column_missing_column():
+    cache = PmcDataCache(_make_pmc_dict())
+    assert cache.has_column("pmc_perf", "NONEXISTENT") is False
+
+
+def test_pmc_data_cache_getitem_missing_key():
+    cache = PmcDataCache(_make_pmc_dict())
+    with pytest.raises(KeyError):
+        cache["nonexistent"]
+
+
+def test_pmc_data_cache_get_type_error():
+    cache = PmcDataCache(_make_pmc_dict())
+    nested = cache["pmc_perf"]
+    assert nested.get([1, 2]) is None
+    assert nested.get([1, 2], "fallback") == "fallback"
+
+
+def test_pmc_data_cache_scalar_value_not_wrapped():
+    raw = {"version": 42, "pmc_perf": pd.DataFrame({"A": [1]})}
+    cache = PmcDataCache(raw)
+
+    assert cache["version"] == 42
+    assert not isinstance(cache["version"], PmcDataCache)
 
 
 def test_pmc_data_cache_with_metric_evaluator():
