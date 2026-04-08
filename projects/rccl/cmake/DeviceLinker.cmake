@@ -6,18 +6,18 @@
 # All commands are expressed as add_custom_command so that the build system
 # (ninja/make) can schedule them optimally alongside the rest of the build.
 #
-# Pipeline per specialized kernel (860 files, fully parallel):
+# Pipeline per specialized kernel (860 files, fully parallel, per GPU target):
 #   compile .cpp -> .s  ->  extract .s -> extracted.s + .json  ->  assemble .o
 #
-# Dispatcher:
+# Dispatcher (per GPU target):
 #   compile common.cu.cpp -> .s
 #   aggregate resource .json files -> max_resources.json
 #   patch dispatcher .s with max resources -> patched.s
 #   assemble patched.s -> common_device.o
 #
 # Final:
-#   lld -shared  ->  device.elf
-#   clang-offload-bundler  ->  device.hipfb
+#   lld -shared  ->  device.elf  (one per GPU target)
+#   clang-offload-bundler  ->  device.hipfb  (bundles all GPU targets)
 #   host compile common.cu.cpp with -fcuda-include-gpubinary  ->  common.o (fat)
 #   normal HIP compile onerank.cu.cpp  ->  onerank.o (fat)
 #
@@ -35,17 +35,17 @@ set(DL_CLANG "${ROCM_PATH}/bin/amdclang++")
 set(DL_LLD "${ROCM_PATH}/llvm/bin/ld.lld")
 set(DL_BUNDLER "${ROCM_PATH}/llvm/bin/clang-offload-bundler")
 
-list(GET GPU_TARGETS 0 DL_GPU_RAW)
-string(REGEX REPLACE ":.*" "" DL_GPU_TARGET "${DL_GPU_RAW}")
-message(STATUS "Device Linker: GPU target = ${DL_GPU_TARGET}")
-
-# Create output directories at configure time
-file(MAKE_DIRECTORY
-  ${DEVICE_BUILD_DIR}/specialized_asm
-  ${DEVICE_BUILD_DIR}/extracted_asm
-  ${DEVICE_BUILD_DIR}/extracted_obj
-  ${DEVICE_BUILD_DIR}/resources
-)
+# ---------------------------------------------------------------------------
+# Parse GPU_TARGETS: strip target features, build offload-arch flag list
+# ---------------------------------------------------------------------------
+set(DL_GPU_TARGETS "")
+set(DL_OFFLOAD_ARCH_FLAGS "")
+foreach(_gpu_raw ${GPU_TARGETS})
+  string(REGEX REPLACE ":.*" "" _gpu "${_gpu_raw}")
+  list(APPEND DL_GPU_TARGETS "${_gpu}")
+  list(APPEND DL_OFFLOAD_ARCH_FLAGS "--offload-arch=${_gpu}")
+endforeach()
+message(STATUS "Device Linker: GPU targets = ${DL_GPU_TARGETS}")
 
 # ---------------------------------------------------------------------------
 # Compile definitions
@@ -120,17 +120,8 @@ else()
   set(DL_OPT_FLAGS -O3)
 endif()
 
-set(DL_DEVICE_COMPILE_FLAGS
-  -x hip --cuda-device-only --offload-arch=${DL_GPU_TARGET}
-  --no-gpu-bundle-output
-  -gline-tables-only
-  -std=c++17
-  -w
-  ${DL_OPT_FLAGS}
-)
-
 # ===========================================================================
-# Per-specialized-kernel commands (compile -> extract -> assemble)
+# Read specialized file list
 # ===========================================================================
 set(SPECIALIZED_FILES_TXT "${GEN_DIR}/specialized_files.txt")
 if(NOT EXISTS "${SPECIALIZED_FILES_TXT}")
@@ -141,175 +132,241 @@ file(STRINGS "${SPECIALIZED_FILES_TXT}" SPECIALIZED_ENTRIES)
 list(LENGTH SPECIALIZED_ENTRIES DL_KERNEL_COUNT)
 message(STATUS "Device Linker: ${DL_KERNEL_COUNT} specialized kernels")
 
-set(ALL_EXTRACTED_OBJS "")
-set(ALL_RESOURCE_JSONS "")
-
-foreach(ENTRY ${SPECIALIZED_ENTRIES})
-  # Format: "filename funcname [guard]"
-  string(REPLACE " " ";" ENTRY_LIST "${ENTRY}")
-  list(GET ENTRY_LIST 0 CPP_FILE)
-  string(REGEX REPLACE "\\.cpp$" "" BASE "${CPP_FILE}")
-
-  set(SRC      "${SPECIALIZED_DIR}/${CPP_FILE}")
-  set(ASM_OUT  "${DEVICE_BUILD_DIR}/specialized_asm/${BASE}.s")
-  set(EXT_ASM  "${DEVICE_BUILD_DIR}/extracted_asm/${BASE}.s")
-  set(RES_JSON "${DEVICE_BUILD_DIR}/resources/${BASE}.json")
-  set(OBJ_OUT  "${DEVICE_BUILD_DIR}/extracted_obj/${BASE}.o")
-
-  # Step 1: Compile specialized kernel to assembly
-  add_custom_command(
-    OUTPUT  ${ASM_OUT}
-    COMMAND ${DL_CLANG}
-      -DRCCL_DEVICE_LINKER
-      ${DL_COMPILE_DEFS}
-      ${DL_INCLUDE_DIRS}
-      ${DL_DEVICE_COMPILE_FLAGS}
-      -S
-      -o ${ASM_OUT}
-      ${SRC}
-    DEPENDS ${SRC}
-    COMMENT "DL compile: ${CPP_FILE}"
-    VERBATIM
-  )
-
-  # Step 2: Extract device function + resource usage
-  add_custom_command(
-    OUTPUT  ${EXT_ASM} ${RES_JSON}
-    COMMAND ${Python3_EXECUTABLE} ${ASM_EXTRACT_DIR}/extract_device_function.py
-      ${ASM_OUT} ${EXT_ASM} ${RES_JSON}
-      > /dev/null
-    DEPENDS ${ASM_OUT} ${ASM_EXTRACT_DIR}/extract_device_function.py
-    COMMENT "DL extract: ${BASE}"
-    VERBATIM
-  )
-
-  # Step 3: Assemble extracted function to relocatable object
-  add_custom_command(
-    OUTPUT  ${OBJ_OUT}
-    COMMAND ${DL_CLANG}
-      -x assembler -target amdgcn-amd-amdhsa -mcpu=${DL_GPU_TARGET}
-      -c -o ${OBJ_OUT}
-      ${EXT_ASM}
-    DEPENDS ${EXT_ASM}
-    COMMENT "DL assemble: ${BASE}"
-    VERBATIM
-  )
-
-  list(APPEND ALL_EXTRACTED_OBJS ${OBJ_OUT})
-  list(APPEND ALL_RESOURCE_JSONS ${RES_JSON})
-endforeach()
-
 # ===========================================================================
-# Dispatcher: compile common.cu.cpp to device assembly
+# Per-GPU-target device pipeline
 # ===========================================================================
-set(COMMON_DEVICE_ASM "${DEVICE_BUILD_DIR}/common_device.s")
+set(ALL_DEVICE_ELFS "")
+set(DL_BUNDLER_TARGETS "host-x86_64-unknown-linux-gnu-")
+set(DL_BUNDLER_INPUTS "--input=/dev/null")
+set(ALL_IR_FILES "")
 
-add_custom_command(
-  OUTPUT  ${COMMON_DEVICE_ASM}
-  COMMAND ${DL_CLANG}
-    -DRCCL_DEVICE_LINKER
-    -DUSE_INDIRECT_FUNCTION_CALL
-    ${DL_COMPILE_DEFS}
-    ${DL_INCLUDE_DIRS}
+foreach(DL_GPU_TARGET ${DL_GPU_TARGETS})
+  set(DL_ARCH_DIR "${DEVICE_BUILD_DIR}/${DL_GPU_TARGET}")
+
+  file(MAKE_DIRECTORY
+    ${DL_ARCH_DIR}/specialized_asm
+    ${DL_ARCH_DIR}/extracted_asm
+    ${DL_ARCH_DIR}/extracted_obj
+    ${DL_ARCH_DIR}/resources
+  )
+
+  set(DL_DEVICE_COMPILE_FLAGS
     -x hip --cuda-device-only --offload-arch=${DL_GPU_TARGET}
     --no-gpu-bundle-output
-    -g
+    -gline-tables-only
     -std=c++17
     -w
     ${DL_OPT_FLAGS}
-    -S
-    -o ${COMMON_DEVICE_ASM}
-    ${HIPIFY_DIR}/src/device/common.cu.cpp
-  DEPENDS ${HIPIFY_DIR}/src/device/common.cu.cpp
-  COMMENT "DL compile dispatcher: common.cu.cpp -> assembly (with -g)"
-  VERBATIM
-)
+  )
+
+  # =========================================================================
+  # Per-specialized-kernel commands (compile -> extract -> assemble)
+  # =========================================================================
+  set(ARCH_EXTRACTED_OBJS "")
+  set(ARCH_RESOURCE_JSONS "")
+
+  foreach(ENTRY ${SPECIALIZED_ENTRIES})
+    # Format: "filename funcname [guard]"
+    string(REPLACE " " ";" ENTRY_LIST "${ENTRY}")
+    list(GET ENTRY_LIST 0 CPP_FILE)
+    string(REGEX REPLACE "\\.cpp$" "" BASE "${CPP_FILE}")
+
+    set(SRC      "${SPECIALIZED_DIR}/${CPP_FILE}")
+    set(ASM_OUT  "${DL_ARCH_DIR}/specialized_asm/${BASE}.s")
+    set(EXT_ASM  "${DL_ARCH_DIR}/extracted_asm/${BASE}.s")
+    set(RES_JSON "${DL_ARCH_DIR}/resources/${BASE}.json")
+    set(OBJ_OUT  "${DL_ARCH_DIR}/extracted_obj/${BASE}.o")
+
+    # Step 1: Compile specialized kernel to assembly
+    add_custom_command(
+      OUTPUT  ${ASM_OUT}
+      COMMAND ${DL_CLANG}
+        -DRCCL_DEVICE_LINKER
+        ${DL_COMPILE_DEFS}
+        ${DL_INCLUDE_DIRS}
+        ${DL_DEVICE_COMPILE_FLAGS}
+        -S
+        -o ${ASM_OUT}
+        ${SRC}
+      DEPENDS ${SRC}
+      COMMENT "DL [${DL_GPU_TARGET}] compile: ${CPP_FILE}"
+      VERBATIM
+    )
+
+    # Step 2: Extract device function + resource usage
+    add_custom_command(
+      OUTPUT  ${EXT_ASM} ${RES_JSON}
+      COMMAND ${Python3_EXECUTABLE} ${ASM_EXTRACT_DIR}/extract_device_function.py
+        ${ASM_OUT} ${EXT_ASM} ${RES_JSON}
+        > /dev/null
+      DEPENDS ${ASM_OUT} ${ASM_EXTRACT_DIR}/extract_device_function.py
+      COMMENT "DL [${DL_GPU_TARGET}] extract: ${BASE}"
+      VERBATIM
+    )
+
+    # Step 3: Assemble extracted function to relocatable object
+    add_custom_command(
+      OUTPUT  ${OBJ_OUT}
+      COMMAND ${DL_CLANG}
+        -x assembler -target amdgcn-amd-amdhsa -mcpu=${DL_GPU_TARGET}
+        -c -o ${OBJ_OUT}
+        ${EXT_ASM}
+      DEPENDS ${EXT_ASM}
+      COMMENT "DL [${DL_GPU_TARGET}] assemble: ${BASE}"
+      VERBATIM
+    )
+
+    list(APPEND ARCH_EXTRACTED_OBJS ${OBJ_OUT})
+    list(APPEND ARCH_RESOURCE_JSONS ${RES_JSON})
+  endforeach()
+
+  # =========================================================================
+  # Dispatcher: compile common.cu.cpp to device assembly
+  # =========================================================================
+  set(ARCH_COMMON_DEVICE_ASM "${DL_ARCH_DIR}/common_device.s")
+
+  add_custom_command(
+    OUTPUT  ${ARCH_COMMON_DEVICE_ASM}
+    COMMAND ${DL_CLANG}
+      -DRCCL_DEVICE_LINKER
+      -DUSE_INDIRECT_FUNCTION_CALL
+      ${DL_COMPILE_DEFS}
+      ${DL_INCLUDE_DIRS}
+      -x hip --cuda-device-only --offload-arch=${DL_GPU_TARGET}
+      --no-gpu-bundle-output
+      -g
+      -std=c++17
+      -w
+      ${DL_OPT_FLAGS}
+      -S
+      -o ${ARCH_COMMON_DEVICE_ASM}
+      ${HIPIFY_DIR}/src/device/common.cu.cpp
+    DEPENDS ${HIPIFY_DIR}/src/device/common.cu.cpp
+    COMMENT "DL [${DL_GPU_TARGET}] compile dispatcher: common.cu.cpp -> assembly"
+    VERBATIM
+  )
+
+  # =========================================================================
+  # Aggregate resource usage across all specialized functions
+  # =========================================================================
+  set(ARCH_MAX_RESOURCES_JSON "${DL_ARCH_DIR}/max_resources.json")
+
+  add_custom_command(
+    OUTPUT  ${ARCH_MAX_RESOURCES_JSON}
+    COMMAND ${Python3_EXECUTABLE} ${ASM_EXTRACT_DIR}/aggregate_resources.py
+      ${DL_ARCH_DIR}/resources
+      ${ARCH_MAX_RESOURCES_JSON}
+    DEPENDS ${ARCH_RESOURCE_JSONS} ${ASM_EXTRACT_DIR}/aggregate_resources.py
+    COMMENT "DL [${DL_GPU_TARGET}] aggregate: resource usage from ${DL_KERNEL_COUNT} functions"
+    VERBATIM
+  )
+
+  # =========================================================================
+  # Patch dispatcher assembly with aggregated resource values
+  # =========================================================================
+  set(ARCH_COMMON_DEVICE_PATCHED "${DL_ARCH_DIR}/common_device_patched.s")
+
+  add_custom_command(
+    OUTPUT  ${ARCH_COMMON_DEVICE_PATCHED}
+    COMMAND ${Python3_EXECUTABLE} ${ASM_EXTRACT_DIR}/patch_dispatcher.py
+      ${ARCH_COMMON_DEVICE_ASM}
+      ${ARCH_COMMON_DEVICE_PATCHED}
+      ${ARCH_MAX_RESOURCES_JSON}
+    DEPENDS ${ARCH_COMMON_DEVICE_ASM} ${ARCH_MAX_RESOURCES_JSON}
+            ${ASM_EXTRACT_DIR}/patch_dispatcher.py
+    COMMENT "DL [${DL_GPU_TARGET}] patch dispatcher with max resources"
+    VERBATIM
+  )
+
+  # =========================================================================
+  # Assemble patched dispatcher
+  # =========================================================================
+  set(ARCH_COMMON_DEVICE_OBJ "${DL_ARCH_DIR}/common_device.o")
+
+  add_custom_command(
+    OUTPUT  ${ARCH_COMMON_DEVICE_OBJ}
+    COMMAND ${DL_CLANG}
+      -x assembler -target amdgcn-amd-amdhsa -mcpu=${DL_GPU_TARGET}
+      -c -o ${ARCH_COMMON_DEVICE_OBJ}
+      ${ARCH_COMMON_DEVICE_PATCHED}
+    DEPENDS ${ARCH_COMMON_DEVICE_PATCHED}
+    COMMENT "DL [${DL_GPU_TARGET}] assemble: common_device.o"
+    VERBATIM
+  )
+
+  # =========================================================================
+  # Link all device objects into device.elf for this architecture
+  # =========================================================================
+  set(ARCH_DEVICE_ELF "${DL_ARCH_DIR}/device.elf")
+  set(ARCH_LINK_RSP   "${DL_ARCH_DIR}/device_link.rsp")
+
+  list(JOIN ARCH_EXTRACTED_OBJS "\n" _arch_objs_newline)
+  file(GENERATE OUTPUT ${ARCH_LINK_RSP}
+    CONTENT "${ARCH_COMMON_DEVICE_OBJ}\n${_arch_objs_newline}\n")
+
+  add_custom_command(
+    OUTPUT  ${ARCH_DEVICE_ELF}
+    COMMAND ${DL_LLD} -shared
+      -o ${ARCH_DEVICE_ELF}
+      @${ARCH_LINK_RSP}
+    DEPENDS ${ARCH_COMMON_DEVICE_OBJ} ${ARCH_EXTRACTED_OBJS}
+    COMMENT "DL [${DL_GPU_TARGET}] link: device.elf"
+    VERBATIM
+  )
+
+  list(APPEND ALL_DEVICE_ELFS "${ARCH_DEVICE_ELF}")
+  list(APPEND DL_BUNDLER_TARGETS "hip-amdgcn-amd-amdhsa--${DL_GPU_TARGET}")
+  list(APPEND DL_BUNDLER_INPUTS "--input=${ARCH_DEVICE_ELF}")
+
+  # =========================================================================
+  # Optional: emit LLVM IR for specialized kernels (ninja device_ir)
+  # =========================================================================
+  set(DL_ARCH_IR_DIR "${DL_ARCH_DIR}/device_ir")
+  file(MAKE_DIRECTORY ${DL_ARCH_IR_DIR})
+
+  foreach(ENTRY ${SPECIALIZED_ENTRIES})
+    string(REPLACE " " ";" ENTRY_LIST "${ENTRY}")
+    list(GET ENTRY_LIST 0 CPP_FILE)
+    string(REGEX REPLACE "\\.cpp$" "" BASE "${CPP_FILE}")
+
+    set(SRC     "${SPECIALIZED_DIR}/${CPP_FILE}")
+    set(IR_OUT  "${DL_ARCH_IR_DIR}/${BASE}.ll")
+
+    add_custom_command(
+      OUTPUT  ${IR_OUT}
+      COMMAND ${DL_CLANG}
+        -DRCCL_DEVICE_LINKER
+        ${DL_COMPILE_DEFS}
+        ${DL_INCLUDE_DIRS}
+        ${DL_DEVICE_COMPILE_FLAGS}
+        -emit-llvm -S
+        -o ${IR_OUT}
+        ${SRC}
+      DEPENDS ${SRC}
+      COMMENT "DL [${DL_GPU_TARGET}] IR: ${CPP_FILE}"
+      VERBATIM
+    )
+    list(APPEND ALL_IR_FILES ${IR_OUT})
+  endforeach()
+
+endforeach()  # end of per-GPU-target loop
 
 # ===========================================================================
-# Aggregate resource usage across all specialized functions
-# ===========================================================================
-set(MAX_RESOURCES_JSON "${DEVICE_BUILD_DIR}/max_resources.json")
-
-add_custom_command(
-  OUTPUT  ${MAX_RESOURCES_JSON}
-  COMMAND ${Python3_EXECUTABLE} ${ASM_EXTRACT_DIR}/aggregate_resources.py
-    ${DEVICE_BUILD_DIR}/resources
-    ${MAX_RESOURCES_JSON}
-  DEPENDS ${ALL_RESOURCE_JSONS} ${ASM_EXTRACT_DIR}/aggregate_resources.py
-  COMMENT "DL aggregate: resource usage from ${DL_KERNEL_COUNT} functions"
-  VERBATIM
-)
-
-# ===========================================================================
-# Patch dispatcher assembly with aggregated resource values
-# ===========================================================================
-set(COMMON_DEVICE_PATCHED "${DEVICE_BUILD_DIR}/common_device_patched.s")
-
-add_custom_command(
-  OUTPUT  ${COMMON_DEVICE_PATCHED}
-  COMMAND ${Python3_EXECUTABLE} ${ASM_EXTRACT_DIR}/patch_dispatcher.py
-    ${COMMON_DEVICE_ASM}
-    ${COMMON_DEVICE_PATCHED}
-    ${MAX_RESOURCES_JSON}
-  DEPENDS ${COMMON_DEVICE_ASM} ${MAX_RESOURCES_JSON}
-          ${ASM_EXTRACT_DIR}/patch_dispatcher.py
-  COMMENT "DL patch dispatcher with max resources"
-  VERBATIM
-)
-
-# ===========================================================================
-# Assemble patched dispatcher
-# ===========================================================================
-set(COMMON_DEVICE_OBJ "${DEVICE_BUILD_DIR}/common_device.o")
-
-add_custom_command(
-  OUTPUT  ${COMMON_DEVICE_OBJ}
-  COMMAND ${DL_CLANG}
-    -x assembler -target amdgcn-amd-amdhsa -mcpu=${DL_GPU_TARGET}
-    -c -o ${COMMON_DEVICE_OBJ}
-    ${COMMON_DEVICE_PATCHED}
-  DEPENDS ${COMMON_DEVICE_PATCHED}
-  COMMENT "DL assemble: common_device.o"
-  VERBATIM
-)
-
-# ===========================================================================
-# Link all device objects into device.elf
-# ===========================================================================
-set(DEVICE_ELF "${DEVICE_BUILD_DIR}/device.elf")
-set(DEVICE_LINK_RSP "${DEVICE_BUILD_DIR}/device_link.rsp")
-
-# Write object file list to a response file to avoid ARG_MAX limits
-# (860+ objects with long absolute paths can exceed the command-line limit).
-list(JOIN ALL_EXTRACTED_OBJS "\n" _extracted_objs_newline)
-file(GENERATE OUTPUT ${DEVICE_LINK_RSP}
-  CONTENT "${COMMON_DEVICE_OBJ}\n${_extracted_objs_newline}\n")
-
-add_custom_command(
-  OUTPUT  ${DEVICE_ELF}
-  COMMAND ${DL_LLD} -shared
-    -o ${DEVICE_ELF}
-    @${DEVICE_LINK_RSP}
-  DEPENDS ${COMMON_DEVICE_OBJ} ${ALL_EXTRACTED_OBJS}
-  COMMENT "DL link: device.elf"
-  VERBATIM
-)
-
-# ===========================================================================
-# Bundle device.elf into a .hipfb fat binary
+# Bundle all per-arch device.elf files into a single .hipfb fat binary
 # ===========================================================================
 set(DEVICE_HIPFB "${DEVICE_BUILD_DIR}/device.hipfb")
+
+list(JOIN DL_BUNDLER_TARGETS "," _bundler_targets_str)
 
 add_custom_command(
   OUTPUT  ${DEVICE_HIPFB}
   COMMAND ${DL_BUNDLER}
     --type=bc
-    --targets=host-x86_64-unknown-linux-gnu-,hip-amdgcn-amd-amdhsa--${DL_GPU_TARGET}
-    --input=/dev/null
-    --input=${DEVICE_ELF}
+    --targets=${_bundler_targets_str}
+    ${DL_BUNDLER_INPUTS}
     --output=${DEVICE_HIPFB}
-  DEPENDS ${DEVICE_ELF}
-  COMMENT "DL bundle: device.elf -> device.hipfb"
+  DEPENDS ${ALL_DEVICE_ELFS}
+  COMMENT "DL bundle: device.elf(s) -> device.hipfb [${DL_GPU_TARGETS}]"
   VERBATIM
 )
 
@@ -321,7 +378,7 @@ set(COMMON_FAT_OBJ "${DEVICE_BUILD_DIR}/common.o")
 add_custom_command(
   OUTPUT  ${COMMON_FAT_OBJ}
   COMMAND ${DL_CLANG}
-    -x hip --offload-host-only --offload-arch=${DL_GPU_TARGET}
+    -x hip --offload-host-only ${DL_OFFLOAD_ARCH_FLAGS}
     -Xclang -fcuda-include-gpubinary -Xclang ${DEVICE_HIPFB}
     -DRCCL_DEVICE_LINKER
     -DUSE_INDIRECT_FUNCTION_CALL
@@ -346,7 +403,7 @@ set(ONERANK_FAT_OBJ "${DEVICE_BUILD_DIR}/onerank.o")
 add_custom_command(
   OUTPUT  ${ONERANK_FAT_OBJ}
   COMMAND ${DL_CLANG}
-    -x hip --offload-arch=${DL_GPU_TARGET}
+    -x hip ${DL_OFFLOAD_ARCH_FLAGS}
     -DRCCL_DEVICE_LINKER
     ${DL_COMPILE_DEFS}
     ${DL_INCLUDE_DIRS}
@@ -370,7 +427,7 @@ set(COLLECTIVES_FAT_OBJ "${DEVICE_BUILD_DIR}/collectives.o")
 add_custom_command(
   OUTPUT  ${COLLECTIVES_FAT_OBJ}
   COMMAND ${DL_CLANG}
-    -x hip --offload-arch=${DL_GPU_TARGET}
+    -x hip ${DL_OFFLOAD_ARCH_FLAGS}
     -DRCCL_DEVICE_LINKER
     ${DL_COMPILE_DEFS}
     ${DL_INCLUDE_DIRS}
@@ -400,36 +457,7 @@ set(DEVICE_LINKER_OBJECTS
 )
 
 # ===========================================================================
-# Optional: emit LLVM IR for specialized kernels (ninja device_ir)
+# Optional: emit LLVM IR (ninja device_ir)
 # ===========================================================================
-set(DL_IR_DIR "${DEVICE_BUILD_DIR}/device_ir")
-file(MAKE_DIRECTORY ${DL_IR_DIR})
-
-set(ALL_IR_FILES "")
-foreach(ENTRY ${SPECIALIZED_ENTRIES})
-  string(REPLACE " " ";" ENTRY_LIST "${ENTRY}")
-  list(GET ENTRY_LIST 0 CPP_FILE)
-  string(REGEX REPLACE "\\.cpp$" "" BASE "${CPP_FILE}")
-
-  set(SRC     "${SPECIALIZED_DIR}/${CPP_FILE}")
-  set(IR_OUT  "${DL_IR_DIR}/${BASE}.ll")
-
-  add_custom_command(
-    OUTPUT  ${IR_OUT}
-    COMMAND ${DL_CLANG}
-      -DRCCL_DEVICE_LINKER
-      ${DL_COMPILE_DEFS}
-      ${DL_INCLUDE_DIRS}
-      ${DL_DEVICE_COMPILE_FLAGS}
-      -emit-llvm -S
-      -o ${IR_OUT}
-      ${SRC}
-    DEPENDS ${SRC}
-    COMMENT "DL IR: ${CPP_FILE}"
-    VERBATIM
-  )
-  list(APPEND ALL_IR_FILES ${IR_OUT})
-endforeach()
-
 add_custom_target(device_ir DEPENDS ${ALL_IR_FILES})
 add_dependencies(device_ir hipify_all)
