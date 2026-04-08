@@ -35,6 +35,7 @@
 #include "rocshmem/rocshmem_config.h"  // NOLINT(build/include_subdir)
 #include "rocshmem/rocshmem.hpp"
 #include "backend_type.hpp"
+#include "log.hpp"
 #include "hdp_policy.hpp"
 #include "backend_proxy.hpp"
 #include "backend_ro.hpp"
@@ -456,7 +457,7 @@ __device__ void ROContext::putmem_signal(void *dest, const void *source, size_t 
       amo_add<uint64_t>(static_cast<void*>(sig_addr), signal, pe);
       break;
     default:
-      DPRINTF("[%s] Invalid sig_op value (%d)\n", __func__, sig_op);
+      LOGD_WARN("[%s] Invalid sig_op value (%d)", __func__, sig_op);
       break;
   }
 }
@@ -476,7 +477,7 @@ __device__ void ROContext::putmem_signal_wg(void *dest, const void *source, size
       amo_add<uint64_t>(static_cast<void*>(sig_addr), signal, pe);
       break;
     default:
-      DPRINTF("[%s] Invalid sig_op value (%d)\n", __func__, sig_op);
+      LOGD_WARN("[%s] Invalid sig_op value (%d)", __func__, sig_op);
       break;
     }
   }
@@ -497,7 +498,7 @@ __device__ void ROContext::putmem_signal_wave(void *dest, const void *source, si
       amo_add<uint64_t>(static_cast<void*>(sig_addr), signal, pe);
       break;
     default:
-      DPRINTF("[%s] Invalid sig_op value (%d)\n", __func__, sig_op);
+      LOGD_WARN("[%s] Invalid sig_op value (%d)", __func__, sig_op);
       break;
     }
   }
