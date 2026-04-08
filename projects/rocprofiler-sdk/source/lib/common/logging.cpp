@@ -29,7 +29,6 @@
 #include <glog/logging.h>
 #include <glog/vlog_is_on.h>
 
-#include <csignal>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -196,16 +195,6 @@ update_logging(const logging_config& cfg)
         }
     }
 }
-void
-fini_logging()
-{
-    // Restore default signal handlers for signals registered by
-    // google::InstallFailureSignalHandler(). When rocprofiler-sdk is loaded as
-    // a shared library, the glog signal handler points to code inside the
-    // library. If the library is unloaded before the process exits, any signal
-    // during remaining teardown jumps to freed memory and crashes.
-    for(auto sig : {SIGSEGV, SIGILL, SIGFPE, SIGBUS})
-        std::signal(sig, SIG_DFL);
-}
+
 }  // namespace common
 }  // namespace rocprofiler

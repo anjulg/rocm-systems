@@ -84,8 +84,5 @@ init_logging(std::string_view env_prefix, logging_config cfg = logging_config{})
 
 void
 update_logging(const logging_config& cfg);
-
-void
-fini_logging();
 }  // namespace common
 }  // namespace rocprofiler
