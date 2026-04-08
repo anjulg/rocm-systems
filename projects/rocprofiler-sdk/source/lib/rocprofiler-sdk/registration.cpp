@@ -916,6 +916,11 @@ initialize()
             finalize();
             common::destroy_static_tl_objects();
             common::destroy_static_objects();
+            // Shut down glog to mark it as uninitialized. Any subsequent
+            // ROCP_INFO during __cxa_finalize will see IsGoogleLoggingInitialized()
+            // == false and write to stderr instead of through LogDestination
+            // objects that may have been destroyed during library unload.
+            if(google::IsGoogleLoggingInitialized()) google::ShutdownGoogleLogging();
         });
         invoke_client_configures();
         invoke_client_initializers();
@@ -959,10 +964,19 @@ finalize()
     if(get_fini_status() > 0) __gcov_dump();
 #endif
 
-    if(get_fini_status() != 0) return;
+    if(get_fini_status() != 0)
+    {
+        ROCP_INFO << "ignoring finalization request (value=" << get_fini_status() << ")";
+        return;
+    }
 
     static auto _sync = std::atomic_flag{};
-    if(_sync.test_and_set()) return;
+    if(_sync.test_and_set())
+    {
+        ROCP_INFO << "ignoring finalization request [already finalized] (value="
+                  << get_fini_status() << ")";
+        return;
+    }
     // above returns true for all invocations after the first one
 
     ROCP_INFO << "finalizing rocprofiler (value=" << get_fini_status() << ")";
