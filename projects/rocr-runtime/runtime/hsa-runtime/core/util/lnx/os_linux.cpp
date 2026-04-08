@@ -64,6 +64,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <numa.h>
 #if defined(__i386__) || defined(__x86_64__)
 #include <cpuid.h>
 #endif
@@ -89,6 +90,116 @@ void* __stdcall ThreadTrampoline(void* arg) {
   CallMe(Data);
   return nullptr;
 }
+
+// Helper function to get NUMA node mask for allowed CPUs.
+// Returns a bitmask where each bit represents whether the corresponding NUMA node
+// is allowed based on the current process's CPU affinity.
+// Returns 0 if all NUMA nodes are allowed (unrestricted), or a bitmask with bits
+// set for allowed nodes. Returns -1 on error.
+static unsigned long GetAllowedNumaNodeMask() {
+  cpu_set_t* current_cpuset = nullptr;
+  int num_cpus = numa_num_possible_cpus();
+  if (num_cpus <= 0) {
+    return static_cast<unsigned long>(-1);
+  }
+
+  current_cpuset = CPU_ALLOC(num_cpus);
+  if (!current_cpuset) {
+    return static_cast<unsigned long>(-1);
+  }
+
+  size_t cpuset_size = CPU_ALLOC_SIZE(num_cpus);
+  CPU_ZERO_S(cpuset_size, current_cpuset);
+
+  // Get current thread's CPU affinity
+  int ret = pthread_getaffinity_np(pthread_self(), cpuset_size, current_cpuset);
+  if (ret != 0) {
+    CPU_FREE(current_cpuset);
+    return static_cast<unsigned long>(-1);
+  }
+
+  // Check if we're allowed to run on all CPUs (unrestricted)
+  bool all_cpus_allowed = true;
+  for (int i = 0; i < num_cpus; i++) {
+    if (!CPU_ISSET_S(i, cpuset_size, current_cpuset)) {
+      all_cpus_allowed = false;
+      break;
+    }
+  }
+
+  if (all_cpus_allowed) {
+    CPU_FREE(current_cpuset);
+    return 0;  // Unrestricted - allow all NUMA nodes
+  }
+
+  // Build a bitmask of allowed NUMA nodes
+  unsigned long allowed_nodes = 0;
+  int max_node = numa_max_node();
+
+  for (int cpu = 0; cpu < num_cpus; cpu++) {
+    if (CPU_ISSET_S(cpu, cpuset_size, current_cpuset)) {
+      int node = numa_node_of_cpu(cpu);
+      if (node >= 0 && node <= max_node) {
+        allowed_nodes |= (1UL << node);
+      }
+    }
+  }
+
+  CPU_FREE(current_cpuset);
+  return allowed_nodes;
+}
+
+// Fill cpuset with CPUs from the allowed NUMA nodes.
+// If allowed_node_mask is 0, allows all CPUs.
+// Otherwise, only sets CPUs from NUMA nodes indicated by the bitmask.
+static void FillCpuSetFromNumaNodes(cpu_set_t* cpuset, int cores, unsigned long allowed_node_mask) {
+  CPU_ZERO_S(CPU_ALLOC_SIZE(cores), cpuset);
+
+  if (allowed_node_mask == 0) {
+    // Unrestricted - allow all CPU cores
+    for (int i = 0; i < cores; i++) {
+      CPU_SET_S(i, CPU_ALLOC_SIZE(cores), cpuset);
+    }
+    return;
+  }
+
+  // Restrict to allowed NUMA nodes
+  int max_node = numa_max_node();
+  int num_cpus = numa_num_possible_cpus();
+
+  struct bitmask* node_cpus = numa_allocate_cpumask();
+  if (!node_cpus) {
+    fprintf(stderr, "numa_allocate_cpumask failed\n");
+    // Fallback: allow all CPUs
+    for (int i = 0; i < cores; i++) {
+      CPU_SET_S(i, CPU_ALLOC_SIZE(cores), cpuset);
+    }
+    return;
+  }
+
+  for (int node = 0; node <= max_node; node++) {
+    // Check if this NUMA node is allowed
+    if ((allowed_node_mask & (1UL << node)) == 0) {
+      continue;
+    }
+
+    // Get CPUs for this NUMA node
+    if (numa_node_to_cpus(node, node_cpus) != 0) {
+      fprintf(stderr, "numa_node_to_cpus failed for node %d\n", node);
+      continue;
+    }
+
+    // Add all CPUs from this node to the cpuset
+    for (int cpu = 0; cpu < num_cpus && cpu < cores; cpu++) {
+      if (numa_bitmask_isbitset(node_cpus, cpu)) {
+        CPU_SET_S(cpu, CPU_ALLOC_SIZE(cores), cpuset);
+      }
+    }
+  }
+
+  numa_free_cpumask(node_cpus);
+}
+
 
 // Thread container allows multiple waits and separate close (destroy).
 class os_thread {
@@ -137,10 +248,21 @@ class os_thread {
         fprintf(stderr, "CPU_ALLOC failed: %s\n", strerror(errno));
         return;
       }
-      CPU_ZERO_S(CPU_ALLOC_SIZE(cores), cpuset);
-      for (int i = 0; i < cores; i++) {
-        CPU_SET_S(i, CPU_ALLOC_SIZE(cores), cpuset);
+
+      // Get the NUMA node mask based on main thread's CPU affinity
+      unsigned long allowed_node_mask = GetAllowedNumaNodeMask();
+      if (allowed_node_mask == static_cast<unsigned long>(-1)) {
+        fprintf(stderr, "GetAllowedNumaNodeMask failed, falling back to all CPUs\n");
+        // Fallback: allow all CPUs
+        CPU_ZERO_S(CPU_ALLOC_SIZE(cores), cpuset);
+        for (int i = 0; i < cores; i++) {
+          CPU_SET_S(i, CPU_ALLOC_SIZE(cores), cpuset);
+        }
+      } else {
+        // Fill cpuset based on allowed NUMA nodes
+        FillCpuSetFromNumaNodes(cpuset, cores, allowed_node_mask);
       }
+
 #ifdef HAVE_PTHREAD_ATTR_SETAFFINITY_NP
       err = pthread_attr_setaffinity_np(&attrib, CPU_ALLOC_SIZE(cores), cpuset);
       CPU_FREE(cpuset);
@@ -172,14 +294,28 @@ class os_thread {
     } while (stackSize < 20 * 1024 * 1024);
 
 #ifndef HAVE_PTHREAD_ATTR_SETAFFINITY_NP
-    if (cores && cpuset) {
-      err = pthread_setaffinity_np(thread, CPU_ALLOC_SIZE(cores), cpuset);
-      CPU_FREE(cpuset);
-      if (err != 0) {
-        fprintf(stderr, "pthread_setaffinity_np failed: %s\n", strerror(err));
-        thread = 0;
-        return;
-      }
+    if (cores) {
+      // We need to recreate the cpuset since it was freed above
+      cpuset = CPU_ALLOC(cores);
+      if (cpuset != nullptr) {
+        unsigned long allowed_node_mask = GetAllowedNumaNodeMask();
+        if (allowed_node_mask == static_cast<unsigned long>(-1)) {
+          // Fallback: allow all CPUs
+          CPU_ZERO_S(CPU_ALLOC_SIZE(cores), cpuset);
+          for (int i = 0; i < cores; i++) {
+            CPU_SET_S(i, CPU_ALLOC_SIZE(cores), cpuset);
+          }
+        } else {
+          FillCpuSetFromNumaNodes(cpuset, cores, allowed_node_mask);
+        }
+
+        err = pthread_setaffinity_np(thread, CPU_ALLOC_SIZE(cores), cpuset);
+        CPU_FREE(cpuset);
+        if (err != 0) {
+          fprintf(stderr, "pthread_setaffinity_np failed: %s\n", strerror(err));
+          thread = 0;
+          return;
+        }
     }
 #endif
     struct sched_param param = {};
