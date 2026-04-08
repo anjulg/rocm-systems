@@ -916,10 +916,11 @@ initialize()
             finalize();
             common::destroy_static_tl_objects();
             common::destroy_static_objects();
-            // Shut down glog to mark it as uninitialized. Any subsequent
-            // ROCP_INFO during __cxa_finalize will see IsGoogleLoggingInitialized()
-            // == false and write to stderr instead of through LogDestination
-            // objects that may have been destroyed during library unload.
+            // glog is statically compiled into librocprofiler-sdk.so, so this
+            // only affects rocprofiler-sdk's copy. Shutting down glog marks it
+            // as uninitialized so any subsequent ROCP_INFO during __cxa_finalize
+            // writes to stderr instead of through LogDestination objects that
+            // may have been destroyed during library unload.
             if(google::IsGoogleLoggingInitialized()) google::ShutdownGoogleLogging();
         });
         invoke_client_configures();
