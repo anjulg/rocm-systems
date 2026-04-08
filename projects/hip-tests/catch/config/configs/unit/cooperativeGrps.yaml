@@ -117,7 +117,7 @@ cooperativeGrps:
     tags: [cooperative, groups, multigpu]
   Unit_Multi_Grid_Group_Positive_Sync:
     <<: *level_2
-    tags: [cooperative, groups, multigpu, image]
+    tags: [cooperative, groups, multigpu]
   Unit_coalesced_groups_shfl_down:
     <<: *level_2
     # Below tests hang in Jenkins PSDB
