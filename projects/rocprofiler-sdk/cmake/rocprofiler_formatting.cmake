@@ -8,6 +8,7 @@
 # - format-rocprofiler-source
 # - format-rocprofiler-cmake
 # - format-rocprofiler-python
+# - format-rocprofiler-python-lint
 #
 # ------------------------------------------------------------------------------#
 
@@ -70,6 +71,14 @@ if(NOT ROCPROFILER_BLACK_FORMAT_EXE
         CACHE FILEPATH "black exe")
 endif()
 
+if(NOT ROCPROFILER_FLAKE8_EXE
+   AND _PYTHON_USER_BIN
+   AND EXISTS "${_PYTHON_USER_BIN}/flake8")
+    set(ROCPROFILER_FLAKE8_EXE
+        "${_PYTHON_USER_BIN}/flake8"
+        CACHE FILEPATH "flake8 exe")
+endif()
+
 find_program(
     ROCPROFILER_CLANG_FORMAT_EXE ${_FMT_REQUIRED}
     NAMES clang-format-11 clang-format-mp-11 clang-format
@@ -85,6 +94,12 @@ find_program(
 find_program(
     ROCPROFILER_BLACK_FORMAT_EXE ${_FMT_REQUIRED}
     NAMES black
+    PATHS ${_PYTHON_USER_BIN}
+    HINTS ${_PYTHON_USER_BIN}
+    PATH_SUFFIXES bin)
+find_program(
+    ROCPROFILER_FLAKE8_EXE
+    NAMES flake8
     PATHS ${_PYTHON_USER_BIN}
     HINTS ${_PYTHON_USER_BIN}
     PATH_SUFFIXES bin)
@@ -113,7 +128,8 @@ endforeach()
 
 if(ROCPROFILER_CLANG_FORMAT_EXE
    OR ROCPROFILER_BLACK_FORMAT_EXE
-   OR ROCPROFILER_CMAKE_FORMAT_EXE)
+   OR ROCPROFILER_CMAKE_FORMAT_EXE
+   OR ROCPROFILER_FLAKE8_EXE)
 
     set(rocp_source_files)
     set(rocp_header_files)
@@ -164,6 +180,17 @@ if(ROCPROFILER_CLANG_FORMAT_EXE
             )
     endif()
 
+    if(ROCPROFILER_FLAKE8_EXE)
+        add_custom_target(
+            format-rocprofiler-python-lint
+            COMMAND ${ROCPROFILER_FLAKE8_EXE} --config ${PROJECT_SOURCE_DIR}/.flake8
+                    --show-source --statistics ${PROJECT_SOURCE_DIR}
+            COMMENT "[rocprofiler] Running python linter ${ROCPROFILER_FLAKE8_EXE}...")
+        if(TARGET format-rocprofiler-python)
+            add_dependencies(format-rocprofiler-python-lint format-rocprofiler-python)
+        endif()
+    endif()
+
     if(ROCPROFILER_CMAKE_FORMAT_EXE)
         add_custom_target(
             format-rocprofiler-cmake
@@ -173,14 +200,20 @@ if(ROCPROFILER_CLANG_FORMAT_EXE
             )
     endif()
 
-    foreach(_TYPE source python cmake)
+    foreach(_TYPE source python python-lint cmake)
         if(TARGET format-rocprofiler-${_TYPE})
             add_dependencies(format-rocprofiler format-rocprofiler-${_TYPE})
-            add_dependencies(format-${_TYPE} format-rocprofiler-${_TYPE})
+            add_dependencies(format-python format-rocprofiler-${_TYPE})
         endif()
     endforeach()
 
     foreach(_TYPE source python cmake)
+        if(TARGET format-rocprofiler-${_TYPE})
+            add_dependencies(format-${_TYPE} format-rocprofiler-${_TYPE})
+        endif()
+    endforeach()
+
+    foreach(_TYPE source python python-lint cmake)
         if(TARGET format-rocprofiler-${_TYPE})
             add_dependencies(format format-rocprofiler-${_TYPE})
         endif()
