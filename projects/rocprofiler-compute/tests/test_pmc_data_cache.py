@@ -4,7 +4,7 @@
 import numpy as np
 import pandas as pd
 
-from utils.parser import MetricEvaluator, PmcDataCache
+from utils.metrics import MetricEvaluator, PmcDataCache
 
 
 def _make_pmc_dict():

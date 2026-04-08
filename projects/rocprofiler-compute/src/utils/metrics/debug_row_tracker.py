@@ -1,28 +1,8 @@
-##############################################################################
-# MIT License
-#
-# Copyright (c) 2026 Advanced Micro Devices, Inc. All rights reserved.
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-##############################################################################
+# Copyright (c) Advanced Micro Devices, Inc.
+# SPDX-License-Identifier:  MIT
 
-"""Debug utilities for tracking and evaluating metric row expressions.
+"""
+Debug utilities for tracking and evaluating metric row expressions.
 
 This module provides debugging tools for analyzing how metric expressions
 are evaluated against raw PMC data frames.
@@ -33,29 +13,30 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any, Optional
 
-import pandas as pd
-
 from utils.logger import console_warning
 
 if TYPE_CHECKING:
-    from utils.parser import MetricEvaluator, PmcDataCache
+    from utils.metrics.evaluator import MetricEvaluator
+    from utils.metrics.pmc_data import PmcDataAccessor
 
 
 _MAX_DEBUG_ROWS = 5
 
 
 class DebugRowTracker:
-    """Track which (df_id, row_id) combinations have been processed.
+    """
+    Track which (df_id, row_id) combinations have been processed.
 
-    Used to avoid printing duplicate input data when multiple expressions
-    in the same row use the same input variables.
+    Used to avoid printing duplicate input data when multiple
+    expressions in the same row use the same input variables.
     """
 
     def __init__(self) -> None:
         self._seen_rows: set[tuple[object, object]] = set()
 
     def should_show_inputs(self, df_id: object, row_id: object) -> bool:
-        """Return True if this is the first expression for this (df_id, row_id).
+        """
+        Return True if this is the first expression for this (df_id, row_id).
 
         Args:
             df_id: The dataframe identifier.
@@ -89,38 +70,42 @@ def _print_debug_global_vars(row_expr: str, metric_evaluator: MetricEvaluator) -
             print(f"  {dollar_name}: [not found]")
 
 
+def _series_to_list(series: Any) -> list[Any]:  # noqa: ANN401
+    """Convert a Series-like object to a plain list."""
+    if hasattr(series, "tolist"):
+        return series.tolist()
+    return list(series)
+
+
 def _extract_column_data(
     table_key: str,
     col_name: str,
-    raw_pmc_df: pd.DataFrame | dict | PmcDataCache,
+    raw_pmc_df: PmcDataAccessor,
 ) -> Optional[list[Any]]:
     """Extract column data from raw_pmc_df (dict, DataFrame, or PmcDataCache)."""
-    from utils.parser import PmcDataCache
+    if table_key in raw_pmc_df:
+        try:
+            return _series_to_list(raw_pmc_df[table_key][col_name])
+        except (KeyError, TypeError):
+            pass
 
-    if isinstance(raw_pmc_df, (dict, PmcDataCache)) and table_key in raw_pmc_df:
-        series = raw_pmc_df[table_key][col_name]
-        return series.tolist() if hasattr(series, "tolist") else list(series)
-    elif isinstance(raw_pmc_df, pd.DataFrame):
-        columns = raw_pmc_df.columns
-        # Handle MultiIndex columns by matching on the top-level table key
-        if isinstance(columns, pd.MultiIndex):
-            if table_key in columns.get_level_values(0):
-                series = raw_pmc_df[table_key][col_name]
-                return series.tolist() if hasattr(series, "tolist") else list(series)
-        # Fallback for flat (single-level) columns
-        if col_name in columns:
-            series = raw_pmc_df[col_name]
-            return series.tolist() if hasattr(series, "tolist") else list(series)
+    if col_name in raw_pmc_df:
+        try:
+            return _series_to_list(raw_pmc_df[col_name])
+        except (KeyError, TypeError):
+            pass
+
     return None
 
 
 def _collect_debug_column_data(
     row_expr: str,
-    raw_pmc_df: pd.DataFrame | dict | PmcDataCache,
+    raw_pmc_df: PmcDataAccessor,
 ) -> tuple[list[tuple[str, Optional[list[Any]]]], int]:
     """Collect column data and compute alignment width for debug output."""
     matched_cols = re.findall(
-        r"raw_pmc_df\[[\"'](\w+)[\"']\]\[[\"'](\w+)[\"']\]", row_expr
+        r"raw_pmc_df\[[\"'](\w+)[\"']\]\[[\"'](\w+)[\"']\]",
+        row_expr,
     )
     seen: set[tuple[str, str]] = set()
     rows_to_print: list[tuple[str, Optional[list[Any]]]] = []
@@ -138,7 +123,10 @@ def _collect_debug_column_data(
                 display = column_data[:_MAX_DEBUG_ROWS]
                 global_width = max(
                     global_width,
-                    max((len(str(v)) for v in display), default=0),
+                    max(
+                        (len(str(v)) for v in display),
+                        default=0,
+                    ),
                 )
         except (KeyError, TypeError) as e:
             console_warning(
@@ -149,7 +137,8 @@ def _collect_debug_column_data(
 
 
 def _print_debug_column_data(
-    rows_to_print: list[tuple[str, Optional[list[Any]]]], global_width: int
+    rows_to_print: list[tuple[str, Optional[list[Any]]]],
+    global_width: int,
 ) -> None:
     """Print collected column data with aligned formatting."""
     for label, column_data in rows_to_print:
@@ -167,7 +156,7 @@ def _print_debug_column_data(
 def _print_debug_inputs(
     row_expr: str,
     metric_evaluator: MetricEvaluator,
-    raw_pmc_df: pd.DataFrame | dict | PmcDataCache,
+    raw_pmc_df: PmcDataAccessor,
     show_inputs: bool,
 ) -> None:
     """Print input variables and column data for debug output."""
@@ -195,11 +184,12 @@ def debug_row_tracker(
     expr: str,
     row_expr: str,
     metric_evaluator: MetricEvaluator,
-    raw_pmc_df: pd.DataFrame | dict | PmcDataCache,
+    raw_pmc_df: PmcDataAccessor,
     *,
     show_inputs: bool = True,
 ) -> None:
-    """Debug helper for tracking and evaluating metric row expressions.
+    """
+    Debug helper for tracking and evaluating metric row expressions.
 
     Args:
         expr: The original metric expression (for display purposes).
