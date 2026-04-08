@@ -230,6 +230,7 @@ virtualMemoryManagement:
   Unit_hipMemUnmap_Capture: *level_2
   Unit_hipMemMapArrayAsync_Positive_Basic:
     <<: *level_2
+    tags: [image]
     # Below tests are failing PSDB
     disabled: [nvidia_linux, nvidia_windows]
   Unit_hipMemSetAccess_SegmentsAccess: *level_2
