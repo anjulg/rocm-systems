@@ -334,7 +334,7 @@ list(JOIN DL_BUNDLER_TARGETS "," _bundler_targets_str)
 add_custom_command(
   OUTPUT  ${DEVICE_HIPFB}
   COMMAND ${DL_BUNDLER}
-    --type=o
+    --type=bc
     --targets=${_bundler_targets_str}
     ${DL_BUNDLER_INPUTS}
     --output=${DEVICE_HIPFB}
