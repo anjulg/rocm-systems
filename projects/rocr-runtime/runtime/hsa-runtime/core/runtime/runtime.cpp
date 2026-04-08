@@ -1976,6 +1976,7 @@ void Runtime::AsyncEventsPool::free(AsyncEventItem* ptr) {
       }
     }
     assert(valid && "Object does not belong to pool.");
+    (void)valid;
   }
   free_list_.push_back(ptr);
 }
@@ -3346,6 +3347,7 @@ hsa_status_t Runtime::SvmPrefetch(void* ptr, size_t size, hsa_agent_t agent,
     attrib.value = op->node_id;
     HSAKMT_STATUS error = HSAKMT_CALL(hsaKmtSVMSetAttr(op->base, op->size, 1, &attrib));
     assert(error == HSAKMT_STATUS_SUCCESS && "KFD Prefetch failed.");
+    (void)error;
 
     removePrefetchRanges(op);
 
@@ -3416,6 +3418,7 @@ Agent* Runtime::GetSVMPrefetchAgent(void* ptr, size_t size) {
     HSAKMT_STATUS error =
         HSAKMT_CALL(hsaKmtSVMGetAttr(reinterpret_cast<void*>(range.first), range.second, 1, &attrib));
     assert(error == HSAKMT_STATUS_SUCCESS && "KFD prefetch query failed.");
+    (void)error;
 
     if (attrib.value == -1) return nullptr;
     if (prefetch_node == -2) prefetch_node = attrib.value;
@@ -3927,10 +3930,12 @@ Runtime::MappedHandleAllowedAgent::~MappedHandleAllowedAgent() {
     /* Remap the CPU mapping back to anonymous, freeing the DRM FD while retaining VA reservation */
     bool result = rocr::os::UncommitMemory(va, size);
     assert(result && "Failed to remap VA to anonymous");
+    (void)result;
   }
   else {
     hsa_status_t status = targetAgent->driver().DestroyImportedShareableHandle(&shareable_handle);
     assert(status == HSA_STATUS_SUCCESS);
+    (void)status;
   }
 }
 

@@ -268,6 +268,7 @@ template <bool useGCR> hsa_status_t BlitSdma<useGCR>::Destroy() {
     // Release queue resources from the kernel
     auto err = agent_->driver().DestroyQueue(queue_resource_.QueueId);
     assert(err == HSA_STATUS_SUCCESS);
+    (void)err;
     memset(&queue_resource_, 0, sizeof(queue_resource_));
   }
 
@@ -1432,7 +1433,7 @@ template <bool useGCR>
 void BlitSdma<useGCR>::BuildBroadcastCopyCommand(char* cmd_addr, uint32_t num_copy_command,
                                                   void* dst1, void* dst2,
                                                   const void* src, size_t size) {
-  constexpr size_t kMask = SDMA_PKT_COPY_LINEAR_BROADCAST::kDstAlignMask_;
+  [[maybe_unused]] constexpr size_t kMask = SDMA_PKT_COPY_LINEAR_BROADCAST::kDstAlignMask_;
   assert((reinterpret_cast<uintptr_t>(dst1) & kMask) ==
          (reinterpret_cast<uintptr_t>(dst2) & kMask));
   size_t cur_size = 0;
@@ -1479,7 +1480,7 @@ void BlitSdma<useGCR>::BuildBroadcastCopyCommand(char* cmd_addr, uint32_t num_co
 template <bool useGCR>
 void BlitSdma<useGCR>::BuildSwapCopyCommand(char* cmd_addr, uint32_t num_copy_command,
                                             void* addr_a, void* addr_b, size_t size) {
-  constexpr size_t kAlign = SDMA_PKT_COPY_LINEAR_SWAP::kAlignment_;
+  [[maybe_unused]] constexpr size_t kAlign = SDMA_PKT_COPY_LINEAR_SWAP::kAlignment_;
   assert((reinterpret_cast<uintptr_t>(addr_a) & (kAlign - 1)) == 0);
   assert((reinterpret_cast<uintptr_t>(addr_b) & (kAlign - 1)) == 0);
 
