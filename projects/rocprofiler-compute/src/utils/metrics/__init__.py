@@ -49,6 +49,6 @@ from utils.metrics.noise_clamping import (  # noqa: F401
     print_noise_clamp_summary,
     to_noise_clamp,
 )
-from utils.metrics.pmc_data import (  # noqa: F401
+from utils.metrics.pmc_data_cache import (  # noqa: F401
     PmcDataCache,
 )

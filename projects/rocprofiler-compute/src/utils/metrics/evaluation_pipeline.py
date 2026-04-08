@@ -25,7 +25,7 @@ from utils.metrics.noise_clamping import (
     get_noise_clamp_warnings,
     print_noise_clamp_summary,
 )
-from utils.metrics.pmc_data import PmcDataCache
+from utils.metrics.pmc_data_cache import PmcDataCache
 from utils.utils_common import BUILD_IN_VARS, SUPPORTED_FIELD, calc_builtin_var
 
 

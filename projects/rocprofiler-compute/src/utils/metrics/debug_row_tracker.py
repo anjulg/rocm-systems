@@ -17,7 +17,7 @@ from utils.logger import console_warning
 
 if TYPE_CHECKING:
     from utils.metrics.evaluator import MetricEvaluator
-    from utils.metrics.pmc_data import PmcDataCache
+    from utils.metrics.pmc_data_cache import PmcDataCache
 
 
 _MAX_DEBUG_ROWS = 5
