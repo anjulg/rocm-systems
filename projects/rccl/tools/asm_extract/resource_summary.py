@@ -101,7 +101,7 @@ def parse_dispatcher_kernels(asm_path):
         if not in_metadata:
             continue
 
-        m = re.match(r'\s+\.name:\s+(\S+)', stripped)
+        m = re.match(r'\s+\.name:\s+(\S+)', line)
         if m:
             if cur_name:
                 kernels_meta[cur_name] = cur_meta
@@ -114,7 +114,7 @@ def parse_dispatcher_kernels(asm_path):
                            ('.sgpr_count', 'sgpr_count'),
                            ('.private_segment_fixed_size', 'private_segment_fixed_size'),
                            ('.group_segment_fixed_size', 'group_segment_fixed_size')]:
-            m = re.match(rf'\s+{re.escape(field)}:\s+(\d+)', stripped)
+            m = re.match(rf'\s+{re.escape(field)}:\s+(\d+)', line)
             if m:
                 cur_meta[key] = int(m.group(1))
 

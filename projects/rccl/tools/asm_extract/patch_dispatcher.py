@@ -11,7 +11,7 @@ Patched sections:
 4. .amdgpu_metadata YAML (vgpr_count, agpr_count, sgpr_count, etc.)
 
 Usage:
-    python3 patch_dispatcher.py <common_device.s> <output.s> <max_resources.json>
+    python3 patch_dispatcher.py <common_device.s> <output.s> <max_resources.json> <gpu_target>
 """
 
 import sys
@@ -19,15 +19,39 @@ import re
 import json
 
 
-MAX_NUMBERED_SGPR = 102  # architectural limit for gfx9
+# Maximum addressable (numbered) SGPRs per architecture generation.
+# GFX9 has 104 physical SGPRs with s[102:103] reserved for VCC -> 102 addressable.
+# GFX10+ has 108 physical SGPRs with s[106:107] reserved for VCC -> 106 addressable.
+_MAX_NUMBERED_SGPR = {
+    9:  102,
+    10: 106,
+    11: 106,
+    12: 106,
+}
 
 
-def load_max_resources(json_path):
+def _gfx_generation(gpu_target):
+    """Extract the major generation number from a target like 'gfx942' -> 9."""
+    m = re.match(r'gfx(\d)', gpu_target)
+    if not m:
+        sys.exit(f"ERROR: cannot parse GPU target '{gpu_target}'")
+    return int(m.group(1))
+
+
+def max_numbered_sgpr(gpu_target):
+    gen = _gfx_generation(gpu_target)
+    if gen not in _MAX_NUMBERED_SGPR:
+        sys.exit(f"ERROR: unknown SGPR limit for generation gfx{gen}xx "
+                 f"(target '{gpu_target}')")
+    return _MAX_NUMBERED_SGPR[gen]
+
+
+def load_max_resources(json_path, gpu_target):
     with open(json_path) as f:
         res = json.load(f)
     # amdhsa_next_free_sgpr is numbered SGPRs only (excludes VCC, flat_scratch, xnack).
     # .sgpr_count in metadata includes system SGPRs. Cap for the .amdhsa_kernel directive.
-    res['next_free_sgpr'] = min(res['sgpr_count'], MAX_NUMBERED_SGPR)
+    res['next_free_sgpr'] = min(res['sgpr_count'], max_numbered_sgpr(gpu_target))
     return res
 
 
@@ -122,6 +146,11 @@ def patch_amdhsa_kernel_directives(lines, max_res):
             result.append(f'{m.group(1)}.amdhsa_private_segment_fixed_size {max_res["private_segment_fixed_size"]}\n')
             continue
 
+        m = re.match(r'(\s*)(\.amdhsa_group_segment_fixed_size)\s+(.*)', line)
+        if m:
+            result.append(f'{m.group(1)}.amdhsa_group_segment_fixed_size {max_res["group_segment_fixed_size"]}\n')
+            continue
+
         m = re.match(r'(\s*)(\.amdhsa_uses_dynamic_stack)\s+(.*)', line)
         if m:
             result.append(f'{m.group(1)}.amdhsa_uses_dynamic_stack 1\n')
@@ -198,6 +227,11 @@ def patch_amdgpu_metadata(lines, max_res):
             result.append(f'{m.group(1)}{max_res["private_segment_fixed_size"]}\n')
             continue
 
+        m = re.match(r'(\s+\.group_segment_fixed_size:\s+)\d+', line)
+        if m:
+            result.append(f'{m.group(1)}{max_res["group_segment_fixed_size"]}\n')
+            continue
+
         m = re.match(r'(\s+\.uses_dynamic_stack:\s+)(true|false)', line)
         if m:
             result.append(f'{m.group(1)}true\n')
@@ -207,8 +241,8 @@ def patch_amdgpu_metadata(lines, max_res):
     return result
 
 
-def patch(asm_path, output_path, max_resources_path):
-    max_res = load_max_resources(max_resources_path)
+def patch(asm_path, output_path, max_resources_path, gpu_target):
+    max_res = load_max_resources(max_resources_path, gpu_target)
 
     print(f"Max resources: VGPR={max_res['vgpr_count']}, AGPR={max_res['agpr_count']}, "
           f"SGPR={max_res['sgpr_count']}, scratch={max_res['private_segment_fixed_size']}, "
@@ -229,8 +263,8 @@ def patch(asm_path, output_path, max_resources_path):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 4:
-        print(f"Usage: {sys.argv[0]} <common_device.s> <output.s> <max_resources.json>")
+    if len(sys.argv) != 5:
+        print(f"Usage: {sys.argv[0]} <common_device.s> <output.s> <max_resources.json> <gpu_target>")
         sys.exit(1)
 
-    patch(sys.argv[1], sys.argv[2], sys.argv[3])
+    patch(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])

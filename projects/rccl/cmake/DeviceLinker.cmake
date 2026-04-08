@@ -48,42 +48,14 @@ endforeach()
 message(STATUS "Device Linker: GPU targets = ${DL_GPU_TARGETS}")
 
 # ---------------------------------------------------------------------------
-# Compile definitions
+# Compile definitions (shared with the rccl target via DeviceCompileDefs.cmake)
 # ---------------------------------------------------------------------------
+include(${PROJECT_SOURCE_DIR}/cmake/DeviceCompileDefs.cmake)
+
 set(DL_COMPILE_DEFS "")
-if(COLLTRACE)
-  list(APPEND DL_COMPILE_DEFS -DENABLE_COLLTRACE)
-endif()
-if(FAULT_INJECTION)
-  list(APPEND DL_COMPILE_DEFS -DENABLE_FAULT_INJECTION)
-endif()
-if(LL128_ENABLED)
-  list(APPEND DL_COMPILE_DEFS -DENABLE_LL128)
-endif()
-if(HIP_CONTIGUOUS_MEMORY)
-  list(APPEND DL_COMPILE_DEFS -DHIP_CONTIGUOUS_MEMORY)
-endif()
-if(ENABLE_WARP_SPEED)
-  list(APPEND DL_COMPILE_DEFS -DENABLE_WARP_SPEED)
-endif()
-if(PROFILE)
-  list(APPEND DL_COMPILE_DEFS -DENABLE_PROFILING)
-endif()
-list(APPEND DL_COMPILE_DEFS
-  -DFMT_HEADER_ONLY=1
-  -DNCCL_MAJOR=${NCCL_MAJOR}
-  -DNCCL_MINOR=${NCCL_MINOR}
-  -DNCCL_PATCH=${NCCL_PATCH}
-  -DNCCL_VERSION_CODE=${NCCL_VERSION}
-  -DROCM_VERSION=${ROCM_VERSION}
-  -D__HIP_PLATFORM_AMD__=1
-)
-if("${hip_version_string}" VERSION_GREATER_EQUAL "5.7.31920")
-  list(APPEND DL_COMPILE_DEFS -DHIP_UNCACHED_MEMORY)
-endif()
-if(HIP_HOST_UNCACHED_MEMORY)
-  list(APPEND DL_COMPILE_DEFS -DHIP_HOST_UNCACHED_MEMORY)
-endif()
+foreach(_def ${RCCL_DEVICE_COMPILE_DEFS})
+  list(APPEND DL_COMPILE_DEFS "-D${_def}")
+endforeach()
 
 # ---------------------------------------------------------------------------
 # Include paths
@@ -272,6 +244,7 @@ foreach(DL_GPU_TARGET ${DL_GPU_TARGETS})
       ${ARCH_COMMON_DEVICE_ASM}
       ${ARCH_COMMON_DEVICE_PATCHED}
       ${ARCH_MAX_RESOURCES_JSON}
+      ${DL_GPU_TARGET}
     DEPENDS ${ARCH_COMMON_DEVICE_ASM} ${ARCH_MAX_RESOURCES_JSON}
             ${ASM_EXTRACT_DIR}/patch_dispatcher.py
     COMMENT "DL [${DL_GPU_TARGET}] patch dispatcher with max resources"
@@ -361,7 +334,7 @@ list(JOIN DL_BUNDLER_TARGETS "," _bundler_targets_str)
 add_custom_command(
   OUTPUT  ${DEVICE_HIPFB}
   COMMAND ${DL_BUNDLER}
-    --type=bc
+    --type=o
     --targets=${_bundler_targets_str}
     ${DL_BUNDLER_INPUTS}
     --output=${DEVICE_HIPFB}

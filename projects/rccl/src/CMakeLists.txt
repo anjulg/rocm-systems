@@ -491,6 +491,10 @@ list(APPEND HIP_SOURCES ${PROJECT_BINARY_DIR}/git_version.cpp)
 ## Set RCCL source files
 add_library(rccl ${HIP_SOURCES})
 
+# Device-code compile definitions shared between the rccl target and DeviceLinker pipeline
+include(${PROJECT_SOURCE_DIR}/cmake/DeviceCompileDefs.cmake)
+target_compile_definitions(rccl PRIVATE ${RCCL_DEVICE_COMPILE_DEFS})
+
 # Device Linker: include pipeline and wire up dependencies
 #==================================================================================================
 if(ENABLE_DEVICE_LINKER)
@@ -506,17 +510,11 @@ set_target_properties(rccl PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}"
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
 
-if("${hip_version_string}" VERSION_GREATER_EQUAL "5.7.31920")
-  target_compile_definitions(rccl PRIVATE HIP_UNCACHED_MEMORY)
-else()
+if(NOT "${hip_version_string}" VERSION_GREATER_EQUAL "5.7.31920")
   # Preserve legacy fallback behavior for older HIP/compiler stacks.
   if(NOT IFC_ENABLED)
     target_compile_options(rccl PRIVATE --hipcc-func-supp)
   endif()
-endif()
-
-if(HIP_HOST_UNCACHED_MEMORY)
-  target_compile_definitions(rccl PRIVATE HIP_HOST_UNCACHED_MEMORY)
 endif()
 
 if(HIP_FABRIC_API_FUNC AND HIP_FABRIC_HANDLE_TYPE)
@@ -562,9 +560,6 @@ if(ROCTX_ENABLE)
 endif()
 
 ## Set RCCL compile definitions
-if(COLLTRACE)
-  target_compile_definitions(rccl PRIVATE ENABLE_COLLTRACE)
-endif()
 if(ENABLE_MSCCL_KERNEL)
   message(WARNING "MSCCL is deprecated and will be removed in a future version of RCCL.")
   target_compile_definitions(rccl PRIVATE COMPILE_MSCCL_KERNEL)
@@ -582,9 +577,6 @@ else()
   if(HAVE_ROCM_SMI_THREAD_ONLY_MUTEX)
     target_compile_definitions(rccl PRIVATE USE_ROCM_SMI_THREAD_ONLY_MUTEX)
   endif()
-endif()
-if(ENABLE_WARP_SPEED)
-  target_compile_definitions(rccl PRIVATE ENABLE_WARP_SPEED)
 endif()
 if(ENABLE_ROCSHMEM)
   target_compile_definitions(rccl PRIVATE ENABLE_ROCSHMEM)
@@ -727,9 +719,6 @@ if(ENABLE_NPKIT)
   target_compile_definitions(rccl PRIVATE ENABLE_NPKIT_PRIM_COLLECT_DATA_PROCESS_TIME)
 endif()
 
-if(PROFILE)
-  target_compile_definitions(rccl PRIVATE ENABLE_PROFILING)
-endif()
 if(ROCTX_ENABLE)
   target_compile_definitions(rccl PRIVATE ROCTX_ENABLE)
 else()
@@ -740,7 +729,6 @@ if(TRACE)
   target_compile_definitions(rccl PRIVATE ENABLE_TRACE)
 endif()
 if(${HIP_CONTIGUOUS_MEMORY})
-  target_compile_definitions(rccl PRIVATE HIP_CONTIGUOUS_MEMORY)
   message(STATUS "HIP_CONTIGUOUS_MEMORY enabled")
 else()
   message(STATUS "HIP_CONTIGUOUS_MEMORY disabled")
@@ -767,10 +755,6 @@ if(DEMANGLE_DIR)
   target_compile_definitions(rccl PRIVATE "HAVE_CPLUS_DEMANGLE=1")
   target_compile_definitions(rccl PRIVATE "HAVE_DECL_BASENAME=1")
 endif()
-if(LL128_ENABLED)
-  target_compile_definitions(rccl PRIVATE ENABLE_LL128)
-endif()
-
 ## Set RCCL compile options
 if (HAVE_PARALLEL_JOBS)
   target_compile_options(rccl PRIVATE -parallel-jobs=12)
@@ -884,7 +868,6 @@ if(TIMETRACE)
   target_compile_options(rccl PRIVATE -ftime-trace)
 endif()
 if (FAULT_INJECTION)
-  target_compile_definitions(rccl PRIVATE ENABLE_FAULT_INJECTION)
   message(STATUS "Fault injection enabled")
 endif()
 

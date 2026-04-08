@@ -149,7 +149,7 @@ while true; do
          --enable_backtrace)         build_bfd=true;                                                                                   shift ;;
          --disable-colltrace)        collective_trace=false;                                                                           shift ;;
          --disable-msccl-kernel)     msccl_kernel_enabled=false;                                                                       shift ;;
-         --device-linker)             device_linker=true;                                                                               shift ;;
+         --device-linker)            device_linker=true;                                                                               shift ;;
          --dump-asm)                 dump_asm=true;                                                                                    shift ;;
          --enable-mscclpp)           mscclpp_enabled=true;                                                                             shift ;;
          --enable-mscclpp-clip)      enable_mscclpp_clip=true;                                                                         shift ;;
