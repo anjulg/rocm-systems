@@ -185,3 +185,54 @@ TEST(common, environment_no_overwrite)
 
     unsetenv("ROCPROFILER_ENV_TEST_NO_OVR");
 }
+
+TEST(common, environment_no_create)
+{
+    using rocprofiler::common::env_config;
+    using rocprofiler::common::env_store;
+    using rocprofiler::common::get_env;
+
+    // Ensure variable is NOT set
+    unsetenv("ROCPROFILER_ENV_TEST_NO_CREATE");
+
+    // overwrite=-1 should not create the variable
+    auto _store = env_store{{env_config{"ROCPROFILER_ENV_TEST_NO_CREATE", "lib_value", -1}}};
+
+    EXPECT_TRUE(_store.push());
+
+    // Variable should still not exist (get_env returns default)
+    EXPECT_EQ(get_env("ROCPROFILER_ENV_TEST_NO_CREATE", std::string{"default"}),
+              std::string_view{"default"});
+
+    EXPECT_TRUE(_store.pop());
+
+    // Pre-set the variable and try again
+    setenv("ROCPROFILER_ENV_TEST_NO_CREATE", "user_value", 1);
+
+    auto _store2 = env_store{{env_config{"ROCPROFILER_ENV_TEST_NO_CREATE", "lib_value", -1}}};
+
+    EXPECT_TRUE(_store2.push());
+
+    // Variable should be replaced since it existed
+    EXPECT_EQ(get_env("ROCPROFILER_ENV_TEST_NO_CREATE", std::string{}),
+              std::string_view{"lib_value"});
+
+    EXPECT_TRUE(_store2.pop());
+
+    // After pop, restored to user_value
+    EXPECT_EQ(get_env("ROCPROFILER_ENV_TEST_NO_CREATE", std::string{}),
+              std::string_view{"user_value"});
+
+    unsetenv("ROCPROFILER_ENV_TEST_NO_CREATE");
+}
+
+TEST(common, environment_glog_not_set_without_log_level)
+{
+    // init_logging("TEST") was called at file scope (line 30) without TEST_LOG_LEVEL set.
+    // Verify that GLOG env vars were NOT created as a side effect.
+    EXPECT_EQ(::std::getenv("GLOG_minloglevel"), nullptr);
+    EXPECT_EQ(::std::getenv("GLOG_logtostderr"), nullptr);
+    EXPECT_EQ(::std::getenv("GLOG_alsologtostderr"), nullptr);
+    EXPECT_EQ(::std::getenv("GLOG_stderrthreshold"), nullptr);
+    EXPECT_EQ(::std::getenv("GLOG_v"), nullptr);
+}

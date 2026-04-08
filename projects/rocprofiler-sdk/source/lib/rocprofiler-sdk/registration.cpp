@@ -959,19 +959,10 @@ finalize()
     if(get_fini_status() > 0) __gcov_dump();
 #endif
 
-    if(get_fini_status() != 0)
-    {
-        ROCP_INFO << "ignoring finalization request (value=" << get_fini_status() << ")";
-        return;
-    }
+    if(get_fini_status() != 0) return;
 
     static auto _sync = std::atomic_flag{};
-    if(_sync.test_and_set())
-    {
-        ROCP_INFO << "ignoring finalization request [already finalized] (value="
-                  << get_fini_status() << ")";
-        return;
-    }
+    if(_sync.test_and_set()) return;
     // above returns true for all invocations after the first one
 
     ROCP_INFO << "finalizing rocprofiler (value=" << get_fini_status() << ")";

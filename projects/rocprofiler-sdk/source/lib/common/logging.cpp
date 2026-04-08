@@ -29,6 +29,7 @@
 #include <glog/logging.h>
 #include <glog/vlog_is_on.h>
 
+#include <csignal>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -55,33 +56,6 @@ struct log_level_info
     int32_t verbose_level = 0;
 };
 
-env_store
-get_glog_env_config(const logging_config& cfg)
-{
-    auto as_env_config = [](std::string_view _var, const auto& _val) {
-        return env_config{std::string{_var}, fmt::format("{}", _val), 0};
-    };
-
-    auto _data = std::vector<env_config>{
-        as_env_config("GLOG_minloglevel", cfg.loglevel),
-        as_env_config("GLOG_logtostderr", cfg.logtostderr ? 1 : 0),
-        as_env_config("GLOG_alsologtostderr", cfg.alsologtostderr ? 1 : 0),
-        as_env_config("GLOG_stderrthreshold", cfg.loglevel),
-        as_env_config("GLOG_v", cfg.vlog_level),
-    };
-
-    if(!cfg.logdir.empty())
-    {
-        _data.emplace_back(as_env_config("GOOGLE_LOG_DIR", cfg.logdir));
-        _data.emplace_back(as_env_config("GLOG_log_dir", cfg.logdir));
-    }
-    if(!cfg.vlog_modules.empty())
-    {
-        _data.emplace_back(as_env_config("GLOG_vmodule", cfg.vlog_modules));
-    }
-
-    return env_store{std::move(_data)};
-}
 }  // namespace
 
 void
@@ -168,10 +142,7 @@ init_logging(std::string_view env_prefix, logging_config cfg)
             }
         }
 
-        auto _env_store = get_glog_env_config(cfg);
-
         update_logging(cfg);
-        _env_store.push();
 
         if(!google::IsGoogleLoggingInitialized())
         {
@@ -190,8 +161,6 @@ init_logging(std::string_view env_prefix, logging_config cfg)
 
         ROCP_INFO << "logging initialized via " << fmt::format("{}_LOG_LEVEL", env_prefix)
                   << ". Log Level: " << loglvl << ". Verbose Log Level: " << vlog_level;
-
-        _env_store.pop(false);
     });
 }
 
@@ -226,6 +195,17 @@ update_logging(const logging_config& cfg)
             }
         }
     }
+}
+void
+fini_logging()
+{
+    // Restore default signal handlers for signals registered by
+    // google::InstallFailureSignalHandler(). When rocprofiler-sdk is loaded as
+    // a shared library, the glog signal handler points to code inside the
+    // library. If the library is unloaded before the process exits, any signal
+    // during remaining teardown jumps to freed memory and crashes.
+    for(auto sig : {SIGSEGV, SIGILL, SIGFPE, SIGBUS})
+        std::signal(sig, SIG_DFL);
 }
 }  // namespace common
 }  // namespace rocprofiler

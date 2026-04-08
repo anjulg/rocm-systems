@@ -1935,6 +1935,11 @@ finalize_rocprofv3(std::string_view context)
     {
         ROCP_INFO << "finalize_rocprofv3('" << context << "') ignored: already finalized";
     }
+
+    // Restore default signal handlers so that glog's FailureSignalHandler
+    // (which points to code in this shared library) does not get invoked
+    // after the library is unloaded during process teardown.
+    common::fini_logging();
 }
 
 bool
