@@ -4,40 +4,16 @@
 """
 Unified PMC data access layer.
 
-Defines the ``PmcDataAccessor`` protocol and the ``PmcDataCache``
-concrete implementation that wraps ``dict`` or ``DataFrame`` inputs
-and caches repeated lookups at every nesting level.
+Defines the ``PmcDataCache`` concrete implementation that wraps
+``dict`` or ``DataFrame`` inputs and caches repeated lookups at
+every nesting level.
 """
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 import pandas as pd
-
-
-@runtime_checkable
-class PmcDataAccessor(Protocol):
-    """
-    Read-only interface for accessing raw PMC counter data.
-
-    All metric-evaluation code should accept this protocol instead of
-    ``Union[pd.DataFrame, dict, PmcDataCache]``.
-    """
-
-    def __getitem__(self, key: str) -> Any:  # noqa: ANN401
-        ...
-
-    def __contains__(self, key: object) -> bool: ...
-
-    def get(
-        self,
-        key: str,
-        default: Any = None,  # noqa: ANN401
-    ) -> Any:  # noqa: ANN401
-        ...
-
-    def has_column(self, table_key: str, col_name: str) -> bool: ...
 
 
 class PmcDataCache:

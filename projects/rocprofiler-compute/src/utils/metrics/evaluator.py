@@ -27,7 +27,7 @@ from utils.metrics.aggregation import (
 from utils.metrics.noise_clamping import to_noise_clamp
 
 if TYPE_CHECKING:
-    from utils.metrics.pmc_data import PmcDataAccessor
+    from utils.metrics.pmc_data import PmcDataCache
 
 _AGGREGATION_FUNCTIONS: dict[str, Any] = {
     "to_min": to_min,
@@ -50,7 +50,7 @@ class MetricEvaluator:
 
     def __init__(
         self,
-        raw_pmc_df: PmcDataAccessor,
+        raw_pmc_df: PmcDataCache,
         sys_vars: dict[str, Any],
         empirical_peaks: dict[str, Any],
     ) -> None:

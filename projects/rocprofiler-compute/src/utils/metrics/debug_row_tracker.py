@@ -17,7 +17,7 @@ from utils.logger import console_warning
 
 if TYPE_CHECKING:
     from utils.metrics.evaluator import MetricEvaluator
-    from utils.metrics.pmc_data import PmcDataAccessor
+    from utils.metrics.pmc_data import PmcDataCache
 
 
 _MAX_DEBUG_ROWS = 5
@@ -80,7 +80,7 @@ def _series_to_list(series: Any) -> list[Any]:  # noqa: ANN401
 def _extract_column_data(
     table_key: str,
     col_name: str,
-    raw_pmc_df: PmcDataAccessor,
+    raw_pmc_df: PmcDataCache,
 ) -> Optional[list[Any]]:
     """Extract column data from raw_pmc_df (dict, DataFrame, or PmcDataCache)."""
     if table_key in raw_pmc_df:
@@ -100,7 +100,7 @@ def _extract_column_data(
 
 def _collect_debug_column_data(
     row_expr: str,
-    raw_pmc_df: PmcDataAccessor,
+    raw_pmc_df: PmcDataCache,
 ) -> tuple[list[tuple[str, Optional[list[Any]]]], int]:
     """Collect column data and compute alignment width for debug output."""
     matched_cols = re.findall(
@@ -156,7 +156,7 @@ def _print_debug_column_data(
 def _print_debug_inputs(
     row_expr: str,
     metric_evaluator: MetricEvaluator,
-    raw_pmc_df: PmcDataAccessor,
+    raw_pmc_df: PmcDataCache,
     show_inputs: bool,
 ) -> None:
     """Print input variables and column data for debug output."""
@@ -184,7 +184,7 @@ def debug_row_tracker(
     expr: str,
     row_expr: str,
     metric_evaluator: MetricEvaluator,
-    raw_pmc_df: PmcDataAccessor,
+    raw_pmc_df: PmcDataCache,
     *,
     show_inputs: bool = True,
 ) -> None:
