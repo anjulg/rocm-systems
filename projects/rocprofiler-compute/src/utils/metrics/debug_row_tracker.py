@@ -82,7 +82,7 @@ def _extract_column_data(
     col_name: str,
     raw_pmc_df: PmcDataCache,
 ) -> Optional[list[Any]]:
-    """Extract column data from raw_pmc_df (dict, DataFrame, or PmcDataCache)."""
+    """Extract column data from raw_pmc_df."""
     if table_key in raw_pmc_df:
         try:
             return _series_to_list(raw_pmc_df[table_key][col_name])
