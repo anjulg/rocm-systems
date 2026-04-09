@@ -1,0 +1,22 @@
+namespace Mirages.Socket;
+
+
+include "common.fbs";
+
+table TimeRequest {
+    session_id: string (required);
+}
+
+
+enum HealthStatus : byte {
+    OK = 0,
+    Unhealthy = 1,
+    Unknown = 2
+}
+
+
+rpc_service Daemon {
+    Health({}) returns (HealthStatus);
+    Time(TimeRequest) returns (Time);    
+}
+

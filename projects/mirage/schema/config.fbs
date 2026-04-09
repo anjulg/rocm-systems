@@ -1,0 +1,12 @@
+namespace Mirages.Config;
+
+
+struct Config {
+    profiles: [ProfileDef] (required);
+}
+
+file_identifier "MYFI";
+
+file_extension "mcfg";
+
+root_type Config;

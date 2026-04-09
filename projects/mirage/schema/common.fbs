@@ -1,0 +1,65 @@
+namespace Mirages;
+
+
+table GpuDef {
+    /// the name of the gpu, e.g. "NVIDIA A100"
+    name: string (required);
+    /// the number of gpu cores
+    cores: uint32 (required);
+    /// the amount of memory in bytes
+    memory: uint64 (required);
+}
+
+/// A profile is a named configuration of a simulator. It is used to specify which simulator, what sessi
+table ProfileDef {
+    /// unique name of this profile
+    name: string (required);
+    /// what simulator to use for this profile
+    simulator : string (required);
+
+
+    /// gpu definition for this profile.
+    gpu: string (required);
+
+    num_gpus: uint32 = 1;
+
+    /// the number of nodes
+    num_nodes : uint32 = 1;
+
+    
+}
+
+
+
+table SessionDef {
+    /// a unique name for this session
+    name: string (required);
+
+    /// the profile to use for this session
+    profile: string (required);
+
+    /// the container image to use for this session.
+    /// should be fully qualified, e.g. "ghcr.io/username/image:tag"
+    image: string;
+}
+
+
+
+table ClusterDef {
+    /// a unique name for this cluster
+    head_adress: string (required);
+
+    /// the sessions that belong to this cluster
+    sessions: [string] (required);
+}
+
+
+/// a picosecond accurate time stamp
+table Time {
+    /// unix timestamp in seconds
+    /// might just be the simulator start time
+    /// you may need to add the picoseconds field to get the actual time
+    seconds: uint64 (required);
+    /// additional picoseconds to add to the seconds field
+    picoseconds: uint64 (required);
+}
