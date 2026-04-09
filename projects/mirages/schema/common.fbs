@@ -1,0 +1,121 @@
+namespace mirages;
+
+
+enum ImplDef
+
+table GpuDef {
+    /// the name of the gpu, e.g. "NVIDIA A100"
+    name: string (required);
+    impl
+}
+
+enum SimulatorMode : byte {
+    /// Functional mode models the hardware at a high level, where the simulator executes instructions without detailed timing.
+    Functional,
+    /// Clocked mode models the hardware at a high level, where the simulator advances in discrete time steps (e.g., per instruction or per event).
+    Clocked,
+    /// Cycle-accurate mode is the most detailed and slowest mode, where the simulator models every cycle of the hardware.
+    CycleAccurate,
+}
+
+/// A profile is a named configuration of a simulator. It is used to specify which simulator, what sessi
+table ProfileDef {
+    /// unique name of this profile
+    name: string (required);
+    /// what simulator to use for this profile
+    simulator : string (required);
+
+    /// the mode to run the simulator in. This can be used to select between different levels of accuracy and performance trade-offs in the simulator.
+    mode : SimulatorMode;
+
+    /// gpu definition for this profile.
+    gpu: string (required);
+
+    /// the number of gpus per node
+    num_gpus: uint32 = 1;
+
+    /// the number of nodes
+    num_nodes : uint32 = 1;
+}
+
+
+struct SetEnv {
+    key: string;
+    value: string;
+}
+
+
+/// how did a run end?
+table RunExit {
+    run_id: string;
+    exit_code: int;
+}
+
+/// a request to run a command
+table RunDef {
+    /// the program to run
+    command: string (required);
+    
+    /// arguments to the command, e.g. ["-c", "echo hello world"]
+    args : [string];
+
+    /// extra environment variables to set for this run
+    env: [SetEnv];
+}
+
+enum Stream : byte {
+    Stdin,
+    Stdout,
+    Stderr,
+}
+
+/// StreamData is used to send data from the server to the client. It contains a stream field that identifies the stream type (e.g., stdout, stderr) and a data field that contains the actual bytes of the stream output.
+table StreamData {
+    /// The stream field is used to identify the stream type (e.g., stdout, stderr) and can be used by the client to route the data appropriately.
+    stream: Stream;
+    /// the data field contains the actual bytes of the stream output. The client can read this data and process it according to the stream type.
+    data: [ubyte] (required);
+}
+
+
+/// a request to ru
+table ExecDef {
+    /// the session to use for this execution
+    session: string (required);
+
+    /// what to run
+    run: RunDef (required);
+}
+
+table SessionDef {
+    /// a unique name for this session
+    name: string (required);
+
+    /// the profile to use for this session
+    profile: string (required);
+
+    /// the container image to use for this session.
+    /// should be fully qualified, e.g. "ghcr.io/username/image:tag"
+    image: string;
+}
+
+
+
+table ClusterDef {
+    /// a unique name for this cluster
+    head_adress: string (required);
+
+    /// the sessions that belong to this cluster
+    sessions: [string] (required);
+}
+
+
+/// a picosecond accurate time stamp
+struct Time {
+    /// unix timestamp in seconds
+    /// might just be the simulator start time
+    /// you may need to add the picoseconds field to get the actual time
+    seconds: uint64;
+    /// additional picoseconds to add to the seconds field
+    picoseconds: uint64;
+}

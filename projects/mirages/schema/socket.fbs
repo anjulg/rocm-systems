@@ -1,6 +1,6 @@
 include "common.fbs";
 
-namespace Mirages.Socket;
+namespace mirages.socket;
 
 
 table TimeRequest {
@@ -28,13 +28,6 @@ table TimeReply {
     time: Time (required);
 }
 
-/// StreamData is used to send data from the server to the client. It contains a stream field that identifies the stream type (e.g., stdout, stderr) and a data field that contains the actual bytes of the stream output.
-table StreamData {
-    /// The stream field is used to identify the stream type (e.g., stdout, stderr) and can be used by the client to route the data appropriately.
-    stream: byte;
-    /// the data field contains the actual bytes of the stream output. The client can read this data and process it according to the stream type.
-    data: [ubyte] (required);
-}
 
 
 table AttachRequest {
