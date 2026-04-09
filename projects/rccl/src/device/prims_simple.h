@@ -221,7 +221,11 @@ private:
     }
 
     if ((flags & RolePostSend) && dataStored && !skip_fence) {
+#if RCCL_HAVE_GLOBAL_DWORDX4_BUILTINS && (defined(__GFX9__))
+      __threadfence();
+#else
       __threadfence_system();
+#endif
     }
 
     if ((flags & Send*RolePostSend) && next_hdp_reg)
@@ -911,10 +915,11 @@ public:
     }
 #if RCCL_HAVE_GLOBAL_DWORDX4_BUILTINS && (defined(__GFX9__))
     else if(p2pWork) {
-      // DWORDX4 builtins use system-scope cache-bypassing stores for both
-      // data (st_global/global_store_b128) and control (STORE macro) paths,
-      // so the cheap s_waitcnt fence is sufficient for all P2P operations.
-      skip_fence = true;
+      // the postPeer fence is gated by RolePostSend and protects
+      // send-side stores only.
+      if (p2pWork->sendIpcReg || p2pWork->sendNetReg) {
+        skip_fence = true;
+      }
     }
 #endif
   }
