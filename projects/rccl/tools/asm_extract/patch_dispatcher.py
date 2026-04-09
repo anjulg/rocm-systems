@@ -146,11 +146,6 @@ def patch_amdhsa_kernel_directives(lines, max_res):
             result.append(f'{m.group(1)}.amdhsa_private_segment_fixed_size {max_res["private_segment_fixed_size"]}\n')
             continue
 
-        m = re.match(r'(\s*)(\.amdhsa_group_segment_fixed_size)\s+(.*)', line)
-        if m:
-            result.append(f'{m.group(1)}.amdhsa_group_segment_fixed_size {max_res["group_segment_fixed_size"]}\n')
-            continue
-
         m = re.match(r'(\s*)(\.amdhsa_uses_dynamic_stack)\s+(.*)', line)
         if m:
             result.append(f'{m.group(1)}.amdhsa_uses_dynamic_stack 1\n')
@@ -225,11 +220,6 @@ def patch_amdgpu_metadata(lines, max_res):
         m = re.match(r'(\s+\.private_segment_fixed_size:\s+)\d+', line)
         if m:
             result.append(f'{m.group(1)}{max_res["private_segment_fixed_size"]}\n')
-            continue
-
-        m = re.match(r'(\s+\.group_segment_fixed_size:\s+)\d+', line)
-        if m:
-            result.append(f'{m.group(1)}{max_res["group_segment_fixed_size"]}\n')
             continue
 
         m = re.match(r'(\s+\.uses_dynamic_stack:\s+)(true|false)', line)
