@@ -844,7 +844,7 @@ __host__ Context *get_internal_ctx(rocshmem_ctx_t ctx) {
 }
 
 __host__ int rocshmem_ctx_create(int64_t options, rocshmem_ctx_t *ctx) {
-  LOG_API("host::ctx_create");
+  LOG_API("host::ctx_create (options=%ld)", options);
 
   void *phys_ctx;
   backend->ctx_create(options, &phys_ctx);
@@ -860,7 +860,7 @@ __host__ int rocshmem_ctx_create(int64_t options, rocshmem_ctx_t *ctx) {
 }
 
 __host__ void rocshmem_ctx_destroy(rocshmem_ctx_t ctx) {
-  LOG_API("host::ctx_destroy");
+  LOG_API("host::ctx_destroy (%p)", ctx.ctx_opaque);
 
   /* TODO: Implicit quiet on this context */
 
@@ -874,21 +874,21 @@ __host__ void rocshmem_ctx_destroy(rocshmem_ctx_t ctx) {
 template <typename T>
 __host__ void rocshmem_put(rocshmem_ctx_t ctx, T *dest, const T *source,
                             size_t nelems, int pe) {
-  LOG_API("host::put");
+  LOG_API("host::put (ctx=%p, dest=%p, source=%p, nelems=%zd, pe=%d)", ctx.ctx_opaque, dest, source, nelems, pe);
 
   get_internal_ctx(ctx)->put(dest, source, nelems, pe);
 }
 
 __host__ void rocshmem_ctx_putmem(rocshmem_ctx_t ctx, void *dest,
                                    const void *source, size_t nelems, int pe) {
-  LOG_API("host::ctx_putmem");
+  LOG_API("host::ctx_putmem (ctx=%p, dest=%p, source=%p, nelems=%zd, pe=%d)", ctx.ctx_opaque, dest, source, nelems, pe);
 
   get_internal_ctx(ctx)->putmem(dest, source, nelems, pe);
 }
 
 template <typename T>
 __host__ void rocshmem_p(rocshmem_ctx_t ctx, T *dest, T value, int pe) {
-  LOG_API("host::p");
+  LOG_API("host::p (ctx=%p, dest=%p, pe=%d)", ctx.ctx_opaque, dest, pe);
 
   get_internal_ctx(ctx)->p(dest, value, pe);
 }
@@ -896,21 +896,21 @@ __host__ void rocshmem_p(rocshmem_ctx_t ctx, T *dest, T value, int pe) {
 template <typename T>
 __host__ void rocshmem_get(rocshmem_ctx_t ctx, T *dest, const T *source,
                             size_t nelems, int pe) {
-  LOG_API("host::get");
+  LOG_API("host::get (ctx=%p, dest=%p, source=%p, nelems=%zd, pe=%d)", ctx.ctx_opaque, dest, source, nelems, pe);
 
   get_internal_ctx(ctx)->get(dest, source, nelems, pe);
 }
 
 __host__ void rocshmem_ctx_getmem(rocshmem_ctx_t ctx, void *dest,
                                    const void *source, size_t nelems, int pe) {
-  LOG_API("host::ctx_getmem");
+  LOG_API("host::ctx_getmem (ctx=%p, dest=%p, source=%p, nelems=%zd, pe=%d)", ctx.ctx_opaque, dest, source, nelems, pe);
 
   get_internal_ctx(ctx)->getmem(dest, source, nelems, pe);
 }
 
 template <typename T>
 __host__ T rocshmem_g(rocshmem_ctx_t ctx, const T *source, int pe) {
-  LOG_API("host::g");
+  LOG_API("host::g (ctx=%p, source=%p, pe=%d)", ctx.ctx_opaque, source, pe);
 
   return get_internal_ctx(ctx)->g(source, pe);
 }
@@ -918,7 +918,7 @@ __host__ T rocshmem_g(rocshmem_ctx_t ctx, const T *source, int pe) {
 template <typename T>
 __host__ void rocshmem_put_nbi(rocshmem_ctx_t ctx, T *dest, const T *source,
                                 size_t nelems, int pe) {
-  LOG_API("host::put_nbi");
+  LOG_API("host::put_nbi (ctx=%p, dest=%p, source=%p, nelems=%zd, pe=%d)", ctx.ctx_opaque, dest, source, nelems, pe);
 
   get_internal_ctx(ctx)->put_nbi(dest, source, nelems, pe);
 }
@@ -926,7 +926,7 @@ __host__ void rocshmem_put_nbi(rocshmem_ctx_t ctx, T *dest, const T *source,
 __host__ void rocshmem_ctx_putmem_nbi(rocshmem_ctx_t ctx, void *dest,
                                        const void *source, size_t nelems,
                                        int pe) {
-  LOG_API("host::ctx_putmem_nbi");
+  LOG_API("host::ctx_putmem_nbi (ctx=%p, dest=%p, source=%p, nelems=%zd, pe=%d)", ctx.ctx_opaque, dest, source, nelems, pe);
 
   get_internal_ctx(ctx)->putmem_nbi(dest, source, nelems, pe);
 }
@@ -934,7 +934,7 @@ __host__ void rocshmem_ctx_putmem_nbi(rocshmem_ctx_t ctx, void *dest,
 template <typename T>
 __host__ void rocshmem_get_nbi(rocshmem_ctx_t ctx, T *dest, const T *source,
                                 size_t nelems, int pe) {
-  LOG_API("host::get_nbi");
+  LOG_API("host::get_nbi (ctx=%p, dest=%p, source=%p, nelems=%zd, pe=%d)", ctx.ctx_opaque, dest, source, nelems, pe);
 
   get_internal_ctx(ctx)->get_nbi(dest, source, nelems, pe);
 }
@@ -942,7 +942,7 @@ __host__ void rocshmem_get_nbi(rocshmem_ctx_t ctx, T *dest, const T *source,
 __host__ void rocshmem_ctx_getmem_nbi(rocshmem_ctx_t ctx, void *dest,
                                        const void *source, size_t nelems,
                                        int pe) {
-  LOG_API("host::ctx_getmem_nbi");
+  LOG_API("host::ctx_getmem_nbi (ctx=%p, dest=%p, source=%p, nelems=%zd, pe=%d)", ctx.ctx_opaque, dest, source, nelems, pe);
 
   get_internal_ctx(ctx)->getmem_nbi(dest, source, nelems, pe);
 }
@@ -950,7 +950,7 @@ __host__ void rocshmem_ctx_getmem_nbi(rocshmem_ctx_t ctx, void *dest,
 template <typename T>
 __host__ T rocshmem_atomic_fetch_add(rocshmem_ctx_t ctx, T *dest, T val,
                                       int pe) {
-  LOG_API("host::atomic_fetch_add");
+  LOG_API("host::atomic_fetch_add (ctx=%p, dest=%p, pe=%d)", ctx.ctx_opaque, dest, pe);
 
   return get_internal_ctx(ctx)->amo_fetch_add<T>(dest, val, pe);
 }
@@ -958,21 +958,21 @@ __host__ T rocshmem_atomic_fetch_add(rocshmem_ctx_t ctx, T *dest, T val,
 template <typename T>
 __host__ T rocshmem_atomic_compare_swap(rocshmem_ctx_t ctx, T *dest, T cond,
                                          T val, int pe) {
-  LOG_API("host::atomic_compare_swap");
+  LOG_API("host::atomic_compare_swap (ctx=%p, dest=%p, pe=%d)", ctx.ctx_opaque, dest, pe);
 
   return get_internal_ctx(ctx)->amo_fetch_cas(dest, val, cond, pe);
 }
 
 template <typename T>
 __host__ T rocshmem_atomic_fetch_inc(rocshmem_ctx_t ctx, T *dest, int pe) {
-  LOG_API("host::atomic_fetch_inc");
+  LOG_API("host::atomic_fetch_inc (ctx=%p, dest=%p, pe=%d)", ctx.ctx_opaque, dest, pe);
 
   return get_internal_ctx(ctx)->amo_fetch_add<T>(dest, 1, pe);
 }
 
 template <typename T>
 __host__ T rocshmem_atomic_fetch(rocshmem_ctx_t ctx, T *source, int pe) {
-  LOG_API("host::atomic_fetch");
+  LOG_API("host::atomic_fetch (ctx=%p, source=%p, pe=%d)", ctx.ctx_opaque, source, pe);
 
   return get_internal_ctx(ctx)->amo_fetch_add<T>(source, 0, pe);
 }
@@ -980,14 +980,14 @@ __host__ T rocshmem_atomic_fetch(rocshmem_ctx_t ctx, T *source, int pe) {
 template <typename T>
 __host__ void rocshmem_atomic_add(rocshmem_ctx_t ctx, T *dest, T val,
                                    int pe) {
-  LOG_API("host::atomic_add");
+  LOG_API("host::atomic_add (ctx=%p, dest=%p, pe=%d)", ctx.ctx_opaque, dest, pe);
 
   get_internal_ctx(ctx)->amo_add<T>(dest, val, pe);
 }
 
 template <typename T>
 __host__ void rocshmem_atomic_inc(rocshmem_ctx_t ctx, T *dest, int pe) {
-  LOG_API("host::atomic_inc");
+  LOG_API("host::atomic_inc (ctx=%p, dest=%p, pe=%d)", ctx.ctx_opaque, dest, pe);
 
   get_internal_ctx(ctx)->amo_add<T>(dest, 1, pe);
 }
@@ -995,14 +995,14 @@ __host__ void rocshmem_atomic_inc(rocshmem_ctx_t ctx, T *dest, int pe) {
 template <typename T>
 __host__ void rocshmem_atomic_set(rocshmem_ctx_t ctx, T *dest, T val,
                                    int pe) {
-  LOG_API("host::atomic_set");
+  LOG_API("host::atomic_set (ctx=%p, dest=%p, pe=%d)", ctx.ctx_opaque, dest, pe);
 
   get_internal_ctx(ctx)->amo_set(dest, val, pe);
 }
 
 template <typename T>
 __host__ T rocshmem_atomic_swap(rocshmem_ctx_t ctx, T *dest, T val, int pe) {
-  LOG_API("host::atomic_set");
+  LOG_API("host::atomic_set (ctx=%p, dest=%p, pe=%d)", ctx.ctx_opaque, dest, pe);
 
   return get_internal_ctx(ctx)->amo_swap(dest, val, pe);
 }
@@ -1010,7 +1010,7 @@ __host__ T rocshmem_atomic_swap(rocshmem_ctx_t ctx, T *dest, T val, int pe) {
 template <typename T>
 __host__ T rocshmem_atomic_fetch_and(rocshmem_ctx_t ctx, T *dest, T val,
                                       int pe) {
-  LOG_API("host::atomic_fetch_and");
+  LOG_API("host::atomic_fetch_and (ctx=%p, dest=%p, pe=%d)", ctx.ctx_opaque, dest, pe);
 
   return get_internal_ctx(ctx)->amo_fetch_and(dest, val, pe);
 }
@@ -1018,7 +1018,7 @@ __host__ T rocshmem_atomic_fetch_and(rocshmem_ctx_t ctx, T *dest, T val,
 template <typename T>
 __host__ void rocshmem_atomic_and(rocshmem_ctx_t ctx, T *dest, T val,
                                    int pe) {
-  LOG_API("host::atomic_and");
+  LOG_API("host::atomic_and (ctx=%p, dest=%p, pe=%d)", ctx.ctx_opaque, dest, pe);
 
   get_internal_ctx(ctx)->amo_and(dest, val, pe);
 }
@@ -1026,14 +1026,14 @@ __host__ void rocshmem_atomic_and(rocshmem_ctx_t ctx, T *dest, T val,
 template <typename T>
 __host__ T rocshmem_atomic_fetch_or(rocshmem_ctx_t ctx, T *dest, T val,
                                      int pe) {
-  LOG_API("host::atomic_fetch_or");
+  LOG_API("host::atomic_fetch_or (ctx=%p, dest=%p, pe=%d)", ctx.ctx_opaque, dest, pe);
 
   return get_internal_ctx(ctx)->amo_fetch_or(dest, val, pe);
 }
 
 template <typename T>
 __host__ void rocshmem_atomic_or(rocshmem_ctx_t ctx, T *dest, T val, int pe) {
-  LOG_API("host::atomic_or");
+  LOG_API("host::atomic_or (ctx=%p, dest=%p, pe=%d)", ctx.ctx_opaque, dest, pe);
 
   get_internal_ctx(ctx)->amo_or(dest, val, pe);
 }
@@ -1041,7 +1041,7 @@ __host__ void rocshmem_atomic_or(rocshmem_ctx_t ctx, T *dest, T val, int pe) {
 template <typename T>
 __host__ T rocshmem_atomic_fetch_xor(rocshmem_ctx_t ctx, T *dest, T val,
                                       int pe) {
-  LOG_API("host::atomic_fetch_xor");
+  LOG_API("host::atomic_fetch_xor (ctx=%p, dest=%p, pe=%d)", ctx.ctx_opaque, dest, pe);
 
   return get_internal_ctx(ctx)->amo_fetch_xor(dest, val, pe);
 }
@@ -1049,32 +1049,32 @@ __host__ T rocshmem_atomic_fetch_xor(rocshmem_ctx_t ctx, T *dest, T val,
 template <typename T>
 __host__ void rocshmem_atomic_xor(rocshmem_ctx_t ctx, T *dest, T val,
                                    int pe) {
-  LOG_API("host::atomic_xor");
+  LOG_API("host::atomic_xor (ctx=%p, dest=%p, pe=%d)", ctx.ctx_opaque, dest, pe);
 
   get_internal_ctx(ctx)->amo_xor(dest, val, pe);
 }
 
 __host__ void rocshmem_ctx_fence(rocshmem_ctx_t ctx) {
-  LOG_API("host::ctx_fence");
+  LOG_API("host::ctx_fence (ctx=%p)", ctx.ctx_opaque);
 
   get_internal_ctx(ctx)->fence();
 }
 
 __host__ void rocshmem_ctx_quiet(rocshmem_ctx_t ctx) {
-  LOG_API("host::ctx_quiet");
+  LOG_API("host::ctx_quiet (ctx=%p)", ctx.ctx_opaque);
 
   get_internal_ctx(ctx)->quiet();
 }
 
 __host__ void rocshmem_barrier_all() {
-  LOG_API("host::barrier_all");
+  LOG_API("host::barrier_all ()");
 
   get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)->barrier_all();
 }
 
 
 __host__ void rocshmem_barrier_all_on_stream(hipStream_t stream) {
-  LOG_API("host::barrier_all_on_stream");
+  LOG_API("host::barrier_all_on_stream ()");
 
   get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)->barrier_all_on_stream(stream);
 }
@@ -1082,7 +1082,7 @@ __host__ void rocshmem_barrier_all_on_stream(hipStream_t stream) {
 __host__ void rocshmem_alltoallmem_on_stream(rocshmem_team_t team, void *dest,
                                              const void *source, size_t size,
                                              hipStream_t stream) {
-  LOG_API("host::alltoallmem_on_stream");
+  LOG_API("host::alltoallmem_on_stream (dest=%p, source=%p, size=%zd)", dest, source, size);
 
   get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)
       ->alltoallmem_on_stream(team, dest, source, size, stream);
@@ -1091,7 +1091,7 @@ __host__ void rocshmem_alltoallmem_on_stream(rocshmem_team_t team, void *dest,
 __host__ void rocshmem_broadcastmem_on_stream(rocshmem_team_t team, void *dest,
                                               const void *source, size_t nelems,
                                               int pe_root, hipStream_t stream) {
-  LOG_API("host::broadcastmem_on_stream");
+  LOG_API("host::broadcastmem_on_stream (dest=%p, source=%p, nelems=%zd, pe_root=%d)", dest, source, nelems, pe_root);
 
   get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)
       ->broadcastmem_on_stream(team, dest, source, nelems, pe_root, stream);
@@ -1100,7 +1100,7 @@ __host__ void rocshmem_broadcastmem_on_stream(rocshmem_team_t team, void *dest,
 __host__ void rocshmem_getmem_on_stream(void *dest, const void *source,
                                         size_t nelems, int pe,
                                         hipStream_t stream) {
-  LOG_API("host::getmem_on_stream");
+  LOG_API("host::getmem_on_stream (dest=%p, source=%p, nelems=%zd, pe=%d)", dest, source, nelems, pe);
 
   get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)
       ->getmem_on_stream(dest, source, nelems, pe, stream);
@@ -1109,7 +1109,7 @@ __host__ void rocshmem_getmem_on_stream(void *dest, const void *source,
 __host__ void rocshmem_putmem_on_stream(void *dest, const void *source,
                                         size_t nelems, int pe,
                                         hipStream_t stream) {
-  LOG_API("host::putmem_on_stream");
+  LOG_API("host::putmem_on_stream (dest=%p, source=%p, nelems=%zd, pe=%d)", dest, source, nelems, pe);
 
   get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)
       ->putmem_on_stream(dest, source, nelems, pe, stream);
@@ -1120,7 +1120,7 @@ __host__ void rocshmem_putmem_signal_on_stream(void *dest, const void *source,
                                                uint64_t *sig_addr,
                                                uint64_t signal, int sig_op,
                                                int pe, hipStream_t stream) {
-  LOG_API("host::putmem_signal_on_stream");
+  LOG_API("host::putmem_signal_on_stream (dest=%p, source=%p, nelems=%zd, pe=%d)", dest, source, nelems, pe);
 
   get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)
       ->putmem_signal_on_stream(dest, source, nelems, sig_addr, signal, sig_op,
@@ -1130,7 +1130,7 @@ __host__ void rocshmem_putmem_signal_on_stream(void *dest, const void *source,
 __host__ void rocshmem_signal_wait_until_on_stream(uint64_t *sig_addr, int cmp,
                                                    uint64_t cmp_value,
                                                    hipStream_t stream) {
-  LOG_API("host::signal_wait_until_on_stream");
+  LOG_API("host::signal_wait_until_on_stream (sig_addr=%p, cmp=%d)", sig_addr, cmp);
 
   get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)
       ->signal_wait_until_on_stream(sig_addr, cmp, cmp_value, stream);
@@ -1147,7 +1147,7 @@ __host__ void rocshmem_broadcast([[maybe_unused]] rocshmem_ctx_t ctx, T *dest,
                                   const T *source, int nelem, int pe_root,
                                   int pe_start, int log_pe_stride, int pe_size,
                                   long *p_sync) {
-  LOG_API("host::broadcast");
+  LOG_API("host::broadcast (dest=%p, source=%p, nelem=%d, pe_root=%d)", dest, source, nelem, pe_root);
 
   get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)
       ->broadcast<T>(dest, source, nelem, pe_root, pe_start, log_pe_stride,
@@ -1158,7 +1158,7 @@ template <typename T>
 __host__ void rocshmem_broadcast([[maybe_unused]] rocshmem_ctx_t ctx,
                                   rocshmem_team_t team, T *dest,
                                   const T *source, int nelem, int pe_root) {
-  LOG_API("host::broadcast");
+  LOG_API("host::broadcast (dest=%p, source=%p, nelem=%d, pe_root=%d)", dest, source, nelem, pe_root);
 
   get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)
       ->broadcast<T>(team, dest, source, nelem, pe_root);
@@ -1169,7 +1169,7 @@ __host__ void rocshmem_to_all([[maybe_unused]] rocshmem_ctx_t ctx, T *dest,
                                const T *source, int nreduce, int PE_start,
                                int logPE_stride, int PE_size, T *pWrk,
                                long *pSync) {
-  LOG_API("host::to_all");
+  LOG_API("host::to_all (dest=%p, source=%p, nreduce=%d)", dest, source, nreduce);
 
   get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)
       ->to_all<T, Op>(dest, source, nreduce, PE_start, logPE_stride, PE_size,
@@ -1180,7 +1180,7 @@ template <typename T, ROCSHMEM_OP Op>
 __host__ int rocshmem_reduce([[maybe_unused]] rocshmem_ctx_t ctx,
                                rocshmem_team_t team, T *dest, const T *source,
                                int nreduce) {
-  LOG_API("host::reduce");
+  LOG_API("host::reduce (dest=%p, source=%p, nreduce=%d)", dest, source, nreduce);
 
   return get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)
               ->reduce<T, Op>(team, dest, source, nreduce);
@@ -1188,7 +1188,7 @@ __host__ int rocshmem_reduce([[maybe_unused]] rocshmem_ctx_t ctx,
 
 template <typename T>
 __host__ void rocshmem_wait_until(T *ivars, int cmp, T val) {
-  LOG_API("host::wait_until");
+  LOG_API("host::wait_until (ivars=%p, cmp=%d, val=%g)", ivars, cmp, (double)val);
 
   get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)->wait_until(ivars, cmp, val);
 }
@@ -1196,7 +1196,7 @@ __host__ void rocshmem_wait_until(T *ivars, int cmp, T val) {
 template <typename T>
 __host__ void rocshmem_wait_until_all(T *ivars, size_t nelems, const int* status,
                                        int cmp, T val) {
-  LOG_API("host::wait_until_all");
+  LOG_API("host::wait_until_all (ivars=%p, nelems=%zd, cmp=%d, val=%g)", ivars, nelems, cmp, (double)val);
 
   get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)->wait_until_all(ivars,
       nelems, status, cmp, val);
@@ -1205,7 +1205,7 @@ __host__ void rocshmem_wait_until_all(T *ivars, size_t nelems, const int* status
 template <typename T>
 __host__ size_t rocshmem_wait_until_any(T *ivars, size_t nelems, const int* status,
                                        int cmp, T val) {
-  LOG_API("host::wait_until_any");
+  LOG_API("host::wait_until_any (ivars=%p, nelems=%zd, cmp=%d, val=%g)", ivars, nelems, cmp, (double)val);
 
   return get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)->wait_until_any(ivars,
       nelems, status, cmp, val);
@@ -1215,7 +1215,7 @@ template <typename T>
 __host__ size_t rocshmem_wait_until_some(T *ivars, size_t nelems, size_t* indices,
                                         const int* status, int cmp,
                                         T val) {
-  LOG_API("host::wait_until_some");
+  LOG_API("host::wait_until_some (ivars=%p, nelems=%zd, cmp=%d, val=%g)", ivars, nelems, cmp, (double)val);
 
   return get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)->wait_until_some(ivars, nelems,
       indices, status, cmp, val);
@@ -1224,7 +1224,7 @@ __host__ size_t rocshmem_wait_until_some(T *ivars, size_t nelems, size_t* indice
 template <typename T>
 __host__ size_t rocshmem_wait_until_any_vector(T *ivars, size_t nelems, const int* status,
                                                 int cmp, T* vals) {
-  LOG_API("host::wait_until_any_vector");
+  LOG_API("host::wait_until_any_vector (ivars=%p, nelems=%zd, cmp=%d, vals=%p)", ivars, nelems, cmp, vals);
 
   return get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)->wait_until_any_vector(ivars,
       nelems, status, cmp, vals);
@@ -1233,7 +1233,7 @@ __host__ size_t rocshmem_wait_until_any_vector(T *ivars, size_t nelems, const in
 template <typename T>
 __host__ void rocshmem_wait_until_all_vector(T *ivars, size_t nelems, const int* status,
                                               int cmp, T* vals) {
-  LOG_API("host::wait_until_all_vector");
+  LOG_API("host::wait_until_all_vector (ivars=%p, nelems=%zd, cmp=%d, vals=%p)", ivars, nelems, cmp, vals);
 
   get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)->wait_until_all_vector(ivars,
       nelems, status, cmp, vals);
@@ -1244,7 +1244,7 @@ __host__ size_t rocshmem_wait_until_some_vector(T *ivars, size_t nelems,
                                                size_t* indices,
                                                const int* status,
                                                int cmp, T* vals) {
-  LOG_API("host::wait_until_some_vector");
+  LOG_API("host::wait_until_some_vector (ivars=%p, nelems=%zd, cmp=%d, vals=%p)", ivars, nelems, cmp, vals);
 
   return get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)->wait_until_some_vector(ivars,
       nelems, indices, status, cmp, vals);
@@ -1252,7 +1252,7 @@ __host__ size_t rocshmem_wait_until_some_vector(T *ivars, size_t nelems,
 
 template <typename T>
 __host__ int rocshmem_test(T *ivars, int cmp, T val) {
-  LOG_API("host::test");
+  LOG_API("host::test (ivars=%p, cmp=%d, val=%g)", ivars, cmp, (double)val);
 
   return get_internal_ctx(ROCSHMEM_HOST_CTX_DEFAULT)->test(ivars, cmp, val);
 }
