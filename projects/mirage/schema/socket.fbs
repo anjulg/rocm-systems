@@ -1,22 +1,60 @@
+include "common.fbs";
+
 namespace Mirages.Socket;
 
 
-include "common.fbs";
-
 table TimeRequest {
-    session_id: string (required);
+    session_id: string;
+}
+
+table HealthRequest {
+    session_id: string;
 }
 
 
 enum HealthStatus : byte {
-    OK = 0,
-    Unhealthy = 1,
-    Unknown = 2
+    Unknown,
+    Healthy,
+    Unhealthy,
+    
+}
+
+table HealthReply {
+    healthy : bool;
+    status : HealthStatus;
+}
+
+table TimeReply {
+    time: Time (required);
+}
+
+/// StreamData is used to send data from the server to the client. It contains a stream field that identifies the stream type (e.g., stdout, stderr) and a data field that contains the actual bytes of the stream output.
+table StreamData {
+    /// The stream field is used to identify the stream type (e.g., stdout, stderr) and can be used by the client to route the data appropriately.
+    stream: byte;
+    /// the data field contains the actual bytes of the stream output. The client can read this data and process it according to the stream type.
+    data: [ubyte] (required);
 }
 
 
+table AttachRequest {
+    run_id: string;
+    
+    /// data to send to the run's stdin. The server will read from this stream and write to the run's stdin.
+    stream: StreamData;
+}
+
+
+
+table AttachReply {
+    data: StreamData;
+    exit: RunExit;
+}
+
 rpc_service Daemon {
-    Health({}) returns (HealthStatus);
-    Time(TimeRequest) returns (Time);    
+    Health(HealthRequest) : HealthReply;
+    Time(TimeRequest) : TimeReply;    
+
+    AttachRun(AttachRequest) : AttachReply (streaming: "server");
 }
 

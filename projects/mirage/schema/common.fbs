@@ -4,10 +4,7 @@ namespace Mirages;
 table GpuDef {
     /// the name of the gpu, e.g. "NVIDIA A100"
     name: string (required);
-    /// the number of gpu cores
-    cores: uint32 (required);
-    /// the amount of memory in bytes
-    memory: uint64 (required);
+
 }
 
 /// A profile is a named configuration of a simulator. It is used to specify which simulator, what sessi
@@ -30,6 +27,10 @@ table ProfileDef {
 }
 
 
+table RunExit {
+    run_id: string;
+    exit_code: int;
+}
 
 table SessionDef {
     /// a unique name for this session
@@ -55,11 +56,11 @@ table ClusterDef {
 
 
 /// a picosecond accurate time stamp
-table Time {
+struct Time {
     /// unix timestamp in seconds
     /// might just be the simulator start time
     /// you may need to add the picoseconds field to get the actual time
-    seconds: uint64 (required);
+    seconds: uint64;
     /// additional picoseconds to add to the seconds field
-    picoseconds: uint64 (required);
+    picoseconds: uint64;
 }

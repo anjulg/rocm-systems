@@ -1,12 +1,14 @@
+include "common.fbs";
+
 namespace Mirages.Config;
 
 
-struct Config {
+table DaemonDef {
     profiles: [ProfileDef] (required);
 }
 
-file_identifier "MYFI";
+file_identifier "MIRC";
 
 file_extension "mcfg";
 
-root_type Config;
+root_type DaemonDef;
