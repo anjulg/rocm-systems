@@ -42,7 +42,7 @@ HIP_TEMPLATE_TEST_CASE(Unit_AtomicAdd_Coherentwithnounsafeflag, float, double) {
 
   if (CheckIfFeatSupported(CTFeatures::CT_FEATURE_FINEGRAIN_HWSUPPORT, gfxName)) {
     if (prop.canMapHostMemory != 1) {
-      HipTest::HIP_SKIP_TEST(HipTest::SkipReason::kHostPinnedMemoryUnsupported);
+      HIP_SKIP_TEST(HipTest::SkipReason::kHostPinnedMemoryUnsupported);
     } else {
       TestType *A_h{nullptr}, *result{nullptr};
       TestType *A_d{nullptr}, *result_d{nullptr};
@@ -67,6 +67,6 @@ HIP_TEMPLATE_TEST_CASE(Unit_AtomicAdd_Coherentwithnounsafeflag, float, double) {
       HIP_CHECK(hipHostFree(result));
     }
   } else {
-    HipTest::HIP_SKIP_TEST(HipTest::SkipReason::kFineGrainHwUnsupported);
+    HIP_SKIP_TEST(HipTest::SkipReason::kFineGrainHwUnsupported);
   }
 }
