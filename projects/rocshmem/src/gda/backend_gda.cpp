@@ -22,9 +22,9 @@
  * IN THE SOFTWARE.
  *****************************************************************************/
 
-#include <cstring>
-
 #include <hip/hip_runtime.h>
+#include <cstring>
+#include <cctype>
 #include <cstdlib>
 #include <cassert>
 #include <algorithm>
@@ -32,7 +32,6 @@
 #include "backend_gda.hpp"
 #include "ibv_wrapper.hpp"
 #include "envvar.hpp"
-#include "topology.hpp"
 #include "gda_team.hpp"
 #include "mpi_instance.hpp"
 #include "util.hpp"
@@ -83,20 +82,28 @@ void GDABackend::init() {
 
   select_nics();
 
-  // Effective QPs per PE per context type: at least num_nics_ so each NIC
-  // gets a dedicated QP row.
-  qps_per_pe_default_ctx_ = std::max(envvar::gda::num_qps_per_pe_default_ctx.get_value(),
-                                     static_cast<size_t>(num_nics_));
-  qps_per_pe_usr_ctx_     = std::max(envvar::gda::num_qps_per_pe_usr_ctx.get_value(),
-                                     static_cast<size_t>(num_nics_));
+  qps_per_pe_default_ctx_ = envvar::gda::num_qps_per_pe_default_ctx.get_value();
+  qps_per_pe_usr_ctx_     = envvar::gda::num_qps_per_pe_usr_ctx.get_value();
 
   // Determine number of QPs to create per PE
   num_qps_per_pe = qps_per_pe_default_ctx_ +
-                   qps_per_pe_usr_ctx_ *
-                   envvar::max_num_contexts;
+                   qps_per_pe_usr_ctx_ * envvar::max_num_contexts;
 
   // Total number of QPs created
   num_qps = num_qps_per_pe * num_pes;
+
+  configure_nic_policy();
+
+  if (envvar::debug_level.get_value() >= envvar::types::debug_level::INFO) {
+    fprintf(stdout,
+      "[rocSHMEM] Info: PE %d QP config: num_nics=%d, "
+      "qps_per_pe_default_ctx=%zu, qps_per_pe_usr_ctx=%zu, "
+      "num_qps_per_pe=%zu, num_qps=%u, nic_policy=%s\n",
+      my_pe, num_nics_, qps_per_pe_default_ctx_, qps_per_pe_usr_ctx_,
+      num_qps_per_pe, num_qps,
+      nic_policy_ == NicPolicy::PER_CONTEXT ? "PER_CONTEXT" : "ROUND_ROBIN");
+    fflush(stdout);
+  }
 
   //TODO setup_host_interface();
   /* Initialize the host interface */
@@ -149,6 +156,41 @@ GDABackend::~GDABackend() {
   if (qp_allocator_ != nullptr) {
     delete qp_allocator_;
     qp_allocator_ = nullptr;
+  }
+}
+
+void GDABackend::configure_nic_policy() {
+  const std::string &policy_str = envvar::gda::nic_policy.get_value();
+
+  std::string policy_upper = policy_str;
+  std::transform(policy_upper.begin(), policy_upper.end(), policy_upper.begin(),
+                 ::toupper);
+
+  if (policy_upper == "PER_CONTEXT") {
+    nic_policy_ = NicPolicy::PER_CONTEXT;
+  } else if (policy_upper == "ROUND_ROBIN") {
+    nic_policy_ = NicPolicy::ROUND_ROBIN;
+  } else {
+    fprintf(stderr,
+            "[rocSHMEM] Warning: unknown NIC_POLICY '%s', using ROUND_ROBIN\n",
+            policy_str.c_str());
+    nic_policy_ = NicPolicy::ROUND_ROBIN;
+  }
+
+  if (nic_policy_ == NicPolicy::ROUND_ROBIN && num_nics_ > 1) {
+    int limit = static_cast<int>(
+        std::max(qps_per_pe_default_ctx_, qps_per_pe_usr_ctx_));
+    if (limit < 1) limit = 1;
+    if (limit < num_nics_) {
+      if (envvar::debug_level.get_value() >= envvar::types::debug_level::INFO) {
+        fprintf(stderr,
+                "[rocSHMEM] Info: ROUND_ROBIN limiting num_nics from %d to %d "
+                "(max qps_per_pe=%d)\n",
+                num_nics_, limit, limit);
+      }
+      nic_devices_.resize(limit);
+      num_nics_ = limit;
+    }
   }
 }
 
@@ -240,15 +282,37 @@ void GDABackend::setup_default_ctx() {
   default_context_proxy_ = GDADefaultContextProxyT(this, tinfo, gda_provider);
 }
 
+void GDABackend::log_ctx_nics(unsigned int ctx_id, size_t qps_per_pe,
+                               int qp_offset) {
+  fprintf(stdout, "[rocSHMEM] Info: PE %d ctx %u qps_per_pe=%zu NICs=[",
+          my_pe, ctx_id, qps_per_pe);
+  for (size_t r = 0; r < qps_per_pe; r++) {
+    int nidx = nic_idx_for_qp(qp_offset + static_cast<int>(r) * num_pes);
+    fprintf(stdout, "%s%s", r ? " " : "", nic_devices_[nidx].nic_name.c_str());
+  }
+  fprintf(stdout, "]\n");
+  fflush(stdout);
+}
+
 void GDABackend::setup_ctxs() {
   setup_host_ctx();
   setup_default_ctx();
 
+  bool verbose = envvar::debug_level.get_value() >= envvar::types::debug_level::INFO;
+  if (verbose) log_ctx_nics(0, qps_per_pe_default_ctx_, 0);
+
   CHECK_HIP(hipMalloc(&ctx_array, sizeof(GDAContext) * envvar::max_num_contexts));
   // 0th context is default context
   for (size_t i = 0; i < envvar::max_num_contexts; i++) {
-    new (&ctx_array[i]) GDAContext(this, i + 1, gda_provider);
+    unsigned int cid = static_cast<unsigned int>(i + 1);
+    new (&ctx_array[i]) GDAContext(this, cid, gda_provider);
     ctx_free_list.get()->push_back(ctx_array + i);
+
+    if (verbose) {
+      int offset = (qps_per_pe_default_ctx_ +
+                    qps_per_pe_usr_ctx_ * (cid - 1)) * num_pes;
+      log_ctx_nics(cid, qps_per_pe_usr_ctx_, offset);
+    }
   }
 
   rocshmem_ctx_t *rocshmem_ctx_array_device = nullptr;
@@ -1026,7 +1090,8 @@ void GDABackend::setup_heap_memory_rkey() {
 
   hipStream_t stream;
   CHECK_HIP(hipStreamCreateWithFlags(&stream, hipStreamNonBlocking));
-  CHECK_HIP(hipMemcpyAsync(host_rkey_cpy, heap_rkey, rkeys_size, hipMemcpyDeviceToHost, stream));
+  CHECK_HIP(hipMemcpyAsync(host_rkey_cpy, heap_rkey, rkeys_size,
+                           hipMemcpyDefault, stream));
   CHECK_HIP(hipStreamSynchronize(stream));
 
   if (backend_comm != MPI_COMM_NULL)
@@ -1036,7 +1101,8 @@ void GDABackend::setup_heap_memory_rkey() {
   else
     backend_bootstr->allGather(host_rkey_cpy, rkeys_per_pe);
 
-  CHECK_HIP(hipMemcpyAsync(heap_rkey, host_rkey_cpy, rkeys_size, hipMemcpyHostToDevice, stream));
+  CHECK_HIP(hipMemcpyAsync(heap_rkey, host_rkey_cpy, rkeys_size,
+                           hipMemcpyDefault, stream));
   CHECK_HIP(hipStreamSynchronize(stream));
   CHECK_HIP(hipStreamDestroy(stream));
 
@@ -1147,6 +1213,9 @@ void GDABackend::open_ib_device() {
 
     /* Must init after querying port */
     select_gid_index(nic);
+
+    /* Zero out the device pointer to avoid usage after free_device_list */
+    nic.device = nullptr;
   }
 
   ibv.free_device_list(device_list);
@@ -1266,6 +1335,12 @@ void GDABackend::modify_qps_init_to_rtr() {
       attr.ah_attr.grh.hop_limit  = 1;
       attr.ah_attr.sl             = 1;
       attr.ah_attr.grh.traffic_class = envvar::gda::traffic_class;
+    } else {
+      attr.ah_attr.is_global         = 0;
+      attr.ah_attr.grh.sgid_index    = 0;
+      attr.ah_attr.grh.hop_limit     = 0;
+      attr.ah_attr.sl                = 0;
+      attr.ah_attr.grh.traffic_class = 0;
     }
 
     attr.rq_psn      = dest_info[i].psn;
