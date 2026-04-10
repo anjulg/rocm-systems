@@ -1,12 +1,37 @@
 namespace mirages;
 
 
-enum ImplDef
+/// The family or vendor of a GPU implementation.
+/// Used to tag GpuDefs so the daemon knows which simulator owns them.
+enum GpuFamily : byte {
+    Unknown,
+    /// AMD CDNA architecture (data-center compute GPUs)
+    AmdCdna,
+    /// AMD RDNA architecture (consumer/workstation GPUs)
+    AmdRdna,
+    /// RISC-V based experimental accelerator
+    RiscV,
+}
 
+/// Describes a specific GPU model that a simulator can emulate.
+///
+/// A GpuDef is returned by a simulator to advertise the GPU models it
+/// supports.  The `name` is a human-readable identifier (e.g. "MI300X")
+/// while `arch` carries the ISA target string used by compilers
+/// (e.g. "gfx942").
 table GpuDef {
-    /// the name of the gpu, e.g. "NVIDIA A100"
+    /// Human-readable name of the GPU, e.g. "MI300X", "MI325X"
     name: string (required);
-    impl
+
+    /// ISA / architecture target string used by the compiler toolchain,
+    /// e.g. "gfx942", "gfx950", "rv64i".
+    arch: string (required);
+
+    /// The GPU family / vendor this definition belongs to.
+    family: GpuFamily = Unknown;
+
+    /// Optional free-form description for display in the dashboard.
+    description: string;
 }
 
 enum SimulatorMode : byte {
@@ -18,7 +43,11 @@ enum SimulatorMode : byte {
     CycleAccurate,
 }
 
-/// A profile is a named configuration of a simulator. It is used to specify which simulator, what sessi
+/// A profile is a named configuration of a simulator.
+///
+/// Profiles bind together a simulator, a GPU model, a simulation mode,
+/// and the cluster shape (num_gpus × num_nodes).  The daemon resolves
+/// profile names to these definitions when creating sessions.
 table ProfileDef {
     /// unique name of this profile
     name: string (required);
@@ -39,9 +68,10 @@ table ProfileDef {
 }
 
 
-struct SetEnv {
-    key: string;
-    value: string;
+/// A key-value pair representing a single environment variable.
+table SetEnv {
+    key: string (required);
+    value: string (required);
 }
 
 
@@ -78,7 +108,11 @@ table StreamData {
 }
 
 
-/// a request to ru
+/// A request to execute a command inside an existing session.
+///
+/// The daemon resolves the session, looks up its simulator, and calls
+/// `get_exec_run_def` to let the simulator inject any extra environment
+/// variables or wrapper commands before the run is actually started.
 table ExecDef {
     /// the session to use for this execution
     session: string (required);
@@ -107,6 +141,14 @@ table ClusterDef {
 
     /// the sessions that belong to this cluster
     sessions: [string] (required);
+}
+
+
+/// Health status of a session or component.
+enum HealthStatus : byte {
+    Unknown,
+    Healthy,
+    Unhealthy,
 }
 
 

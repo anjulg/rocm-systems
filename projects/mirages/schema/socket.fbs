@@ -12,13 +12,6 @@ table HealthRequest {
 }
 
 
-enum HealthStatus : byte {
-    Unknown,
-    Healthy,
-    Unhealthy,
-    
-}
-
 table HealthReply {
     healthy : bool;
     status : HealthStatus;

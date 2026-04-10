@@ -12,6 +12,9 @@ dependencies = []
 [project.scripts]
 mirages = "mirages:main"
 
+[project.entry-points."mirages.simulators"]
+rocjitsu = "mirages.simulators.rocjitsu:RocjitsuSimulator"
+
 [build-system]
 requires = ["uv_build>=0.11.6,<0.12.0"]
 build-backend = "uv_build"
