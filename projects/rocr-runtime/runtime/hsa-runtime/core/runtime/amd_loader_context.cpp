@@ -465,8 +465,14 @@ void* LoaderContext::SegmentAlloc(amdgpu_hsa_elf_segment_t segment,
     case HSA_PROFILE_BASE:
 #if defined(_WIN32) || defined(_WIN64)
       // On Windows, code objects at high GPU VAs can cause intermittent GPU page faults.
-      // Use identity-mapped system memory instead.
-      mem = new (std::nothrow) RegionMemory(RegionMemory::System(true), true);
+      // Prefer identity-mapped system memory when a coarse-grained system region exists.
+      // Some APU configurations may not expose any coarse system region, so fall back
+      // to agent-local memory instead of dereferencing an empty coarse-region list.
+      if (!core::Runtime::runtime_singleton_->system_regions_coarse().empty()) {
+        mem = new (std::nothrow) RegionMemory(RegionMemory::System(true), true);
+      } else {
+        mem = new (std::nothrow) RegionMemory(RegionMemory::AgentLocal(agent, true), true);
+      }
 #else
       mem = new (std::nothrow) RegionMemory(RegionMemory::AgentLocal(agent, true), true);
 #endif
