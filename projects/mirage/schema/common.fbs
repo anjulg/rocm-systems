@@ -21,11 +21,11 @@ enum GpuFamily : byte {
 /// (e.g. "gfx942").
 table GpuDef {
     /// Human-readable name of the GPU, e.g. "MI300X", "MI325X"
-    name: string (required);
+    name: string;
 
     /// ISA / architecture target string used by the compiler toolchain,
     /// e.g. "gfx942", "gfx950", "rv64i".
-    arch: string (required);
+    arch: string;
 
     /// The GPU family / vendor this definition belongs to.
     family: GpuFamily = Unknown;
