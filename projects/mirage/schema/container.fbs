@@ -8,7 +8,7 @@
 
 include "common.fbs";
 
-namespace mirages.container;
+namespace mirage.container;
 
 
 /// A bind-mount from the host into the container.

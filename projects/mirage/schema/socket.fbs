@@ -1,7 +1,7 @@
 include "common.fbs";
 include "simulator.fbs";
 
-namespace mirages.socket;
+namespace mirage.socket;
 
 
 table TimeRequest {

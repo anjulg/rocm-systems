@@ -1,6 +1,6 @@
 include "common.fbs";
 
-namespace mirages.config;
+namespace mirage.config;
 
 
 table DaemonDef {
