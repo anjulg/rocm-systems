@@ -127,6 +127,7 @@ declare -A TEST_NUMBERS=(
   ["flood_fadd"]="91"
   ["flood_waitadd"]="92"
   ["device_bitcode"]="93"
+  ["teamctxsharedinfra"]="94"
 )
 
 ExecTest() {
@@ -555,6 +556,8 @@ TestOther() {
   ExecTest  "teamctxblockinfra"   5       1            1
   ExecTest  "teamctxoddeveninfra" 4       1            1
   ExecTest  "teamctxoddeveninfra" 5       1            1
+  ExecTest  "teamctxsharedinfra"  2       1            1
+  ExecTest  "teamctxsharedinfra"  5       1            1
   unset ROCSHMEM_MAX_NUM_CONTEXTS
 
   ExecTest  "shmemptr"         2       1            1         8
