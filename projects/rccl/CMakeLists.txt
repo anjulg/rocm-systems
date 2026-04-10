@@ -634,45 +634,29 @@ configure_file(src/nccl.h.in ${PROJECT_BINARY_DIR}/include/nccl.h)      # Used b
 
 ## RCCL library
 #==================================================================================================
-add_subdirectory(src)
-
-## Setup librccl.so version
-rocm_set_soversion(rccl "1.0")
-
-# Used by the static-library link path below (expects a list).
-set(_rccl_cxxflags "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${CMAKE_BUILD_TYPE}}")
-separate_arguments(CXXFLAGS NATIVE_COMMAND "${_rccl_cxxflags}")
-
 if(NOT BUILD_SHARED_LIBS)
-  # To create a static lib with `-fgpu-rdc`, you need `--emit-static-lib` and `--hip-link`.
-  # You also need to invoke amdclang++ again to trigger GPU code generation.
-  set(static_link_flags
+  # CMAKE_CXX_CREATE_STATIC_LIBRARY replaces the entire archive creation step as a single
+  # command, unlike CMAKE_CXX_ARCHIVE_CREATE which is split into create/append/finish and
+  # can be bypassed for large object lists. Must be set before add_subdirectory(src) so it
+  # is in effect when the rccl target is created.
+  set(_static_flags
     ${CXXFLAGS}
     --hip-link
     -fgpu-rdc
     --emit-static-lib
   )
-
-  # Find all the libraries we need to link at link time to include them in the clang link
-  # command line.
-  get_target_property(rccl_libs rccl LINK_LIBRARIES)
-  foreach(target ${rccl_libs})
-    if(TARGET ${target})
-      get_target_property(location ${target} LOCATION)
-      if(location)
-        LIST(APPEND static_link_flags -l${location})
-      endif()
-    endif()
+  foreach(_target ${GPU_TARGETS})
+    list(APPEND _static_flags --offload-arch=${_target})
   endforeach()
+  list(JOIN _static_flags " " _static_flags_str)
 
-  foreach(target ${GPU_TARGETS})
-    list(APPEND static_link_flags --offload-arch=${target})
-  endforeach()
-  list(JOIN static_link_flags " " flags_str)
-
-  # Invoking amdclang++ this way will produce a static archive, so just override ARCHIVE_CREATE.
-  set(CMAKE_CXX_ARCHIVE_CREATE "<CMAKE_CXX_COMPILER> ${flags_str} -o <TARGET> <OBJECTS>")
+  set(CMAKE_CXX_CREATE_STATIC_LIBRARY "<CMAKE_CXX_COMPILER> ${_static_flags_str} -o <TARGET> <OBJECTS>")
 endif()
+
+add_subdirectory(src)
+
+## Setup librccl.so version
+rocm_set_soversion(rccl "1.0")
 
 # Install settings
 #==================================================================================================

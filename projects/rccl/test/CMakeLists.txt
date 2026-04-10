@@ -159,7 +159,6 @@ if(BUILD_TESTS)
     ScatterTests.cpp
     SendRecvTests.cpp
     StandaloneTests.cpp
-    _RecorderTests.cpp
     common/main.cpp
     common/CallCollectiveForked.cpp
     common/CollectiveArgs.cpp
@@ -175,6 +174,14 @@ if(BUILD_TESTS)
     latency_profiler/LatencyProfilerUnitTest.cpp
     ../src/misc/latency_profiler/CollTraceUtils.cc
     )
+
+  # _RecorderTests.cpp uses RcclMockFuncs.hpp which defines ncclDebugLog and getHostName as
+  # non-weak stubs. With a shared library these override the library symbols at runtime, but
+  # with a static library the linker sees duplicate definitions and errors out. Exclude from
+  # static builds.
+  if(BUILD_SHARED_LIBS)
+    list(APPEND TEST_SOURCE_FILES _RecorderTests.cpp)
+  endif()
 
   # Due to default hidden symbol visibility, append source file if build type is not Debug.
   # It requires explicit addition of the following source file(s)
@@ -295,7 +302,7 @@ if(BUILD_TESTS)
       endif()
     else()
       add_dependencies(${test_executable} rccl)
-      target_link_libraries(${test_executable} PRIVATE dl rt numa -lrccl -L${CMAKE_BINARY_DIR} -lrocm_smi64 -L${ROCM_PATH}/lib -L${ROCM_PATH}/rocm_smi/lib)
+      target_link_libraries(${test_executable} PRIVATE dl rt numa -lrccl -L${CMAKE_BINARY_DIR} -lrocm_smi64 -L${ROCM_PATH}/lib -L${ROCM_PATH}/rocm_smi/lib -lroctx64 -lrocprofiler-register)
     endif()
 
     rocm_install(TARGETS ${test_executable} COMPONENT tests)
