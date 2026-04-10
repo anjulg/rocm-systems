@@ -1,0 +1,69 @@
+# Copyright (c) 2026 Advanced Micro Devices, Inc. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+# Benchmark for measuring rocprofiler-sdk-attach overhead
+#
+# This benchmark measures the performance impact of enabling queue interception
+# for dynamic process attachment (controlled by ROCP_TOOL_ATTACH environment variable
+# or ROCPROFILER_REGISTER_BUILD_DEFAULT_ATTACHMENT CMake option).
+#
+# Queue interception allows profilers to attach to running processes and intercept
+# kernel dispatches, but adds overhead even when no profiler is attached.
+#
+# Test methodology:
+# - Run in baseline mode only (no rocprofv3 instrumentation)
+# - Compare ROCP_TOOL_ATTACH=0 (disabled) vs ROCP_TOOL_ATTACH=1 (enabled)
+# - Use hip-graph-bubbles which launches thousands of quick kernels to stress
+#   the queue write interception mechanism
+#
+# Expected overhead:
+# - Small increase in wall_time and cpu_time from write interceptor overhead
+# - Increase in peak_rss from loading librocprofiler-sdk-attach.so
+# - Per-dispatch overhead multiplied by number of kernel launches
+#
+# Build requirements:
+# - Requires hip-graph-bubbles test binary (tests/bin/hip-graph-bubbles)
+
+defaults:
+  benchmark:
+    - baseline  # Only baseline mode tests attachment overhead
+  group:
+    - attachment-overhead
+
+jobs:
+  # Baseline 1: Attachment disabled (old default behavior)
+  # This represents the minimal overhead - no attachment library loaded
+  - name: hip-graph-bubbles-attach-disabled
+    command: [hip-graph-bubbles, 2000, 200, 256, 25]
+    # Args: num_kernels=2000, num_iterations=200, array_size=256, progress_interval=25
+    # Total kernel launches: 2000 * 200 = 400,000
+    benchmark:
+      - baseline
+    environment:
+      ROCP_TOOL_ATTACH: "0"
+
+  # Baseline 2: Attachment enabled (new default after PR)
+  # This loads librocprofiler-sdk-attach.so and intercepts all queue creation
+  - name: hip-graph-bubbles-attach-enabled
+    command: [hip-graph-bubbles, 2000, 200, 256, 25]
+    benchmark:
+      - baseline
+    environment:
+      ROCP_TOOL_ATTACH: "1"
