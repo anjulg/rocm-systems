@@ -43,8 +43,6 @@ const std::array<std::pair<int, int>, NAVI_TYPE_LAST> TokenLookupTable::time_bit
     std::array<std::pair<int, int>, NAVI_TYPE_LAST> ret{};
 
     ret.at(RdnaType::INST) = {3, 6};
-    ret.at(RdnaType::INST) = {3, 6};
-    ret.at(RdnaType::INST) = {3, 6};
     ret.at(RdnaType::VALU_INST) = {3, 6};
     ret.at(RdnaType::IMM_ONE) = {4, 7};
     ret.at(RdnaType::IMMEDIATE) = {5, 8};

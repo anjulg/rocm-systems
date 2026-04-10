@@ -29,7 +29,7 @@
 #include "filenames.hpp"
 #include "perfcounter.hpp"
 
-#include <rocprof_trace_decoder.h>
+#include <rocprof_trace_decoder/rocprof_trace_decoder.h>
 
 #include <cxxabi.h>
 #include <cstring>
@@ -39,9 +39,6 @@ namespace rocprofiler
 {
 namespace att_wrapper
 {
-namespace
-{}  // namespace
-
 rocprofiler_thread_trace_decoder_status_t
 get_trace_data(rocprofiler_thread_trace_decoder_record_type_t trace_id,
                void*                                          trace_events,
@@ -53,66 +50,7 @@ get_trace_data(rocprofiler_thread_trace_decoder_record_type_t trace_id,
 
     try
     {
-        auto* infos = (rocprofiler_thread_trace_decoder_info_t*) trace_events;
-        for(size_t i = 0; i < trace_size; i++)
-            ROCP_WARNING << rocprofiler_thread_trace_decoder_info_string(tool.decoder, infos[i]);
-    }
-    else if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_GFXIP)
-    {
-        tool.config.filemgr->gfxip = reinterpret_cast<size_t>(trace_events);
-    }
-    else if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_OCCUPANCY)
-    {
-        for(size_t i = 0; i < trace_size; i++)
-            tool.config.occupancy.push_back(static_cast<const occupancy_t*>(trace_events)[i]);
-    }
-    else if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_PERFEVENT)
-    {
-        PerfcounterFile(tool.config, static_cast<perfevent_t*>(trace_events), trace_size);
-    }
-    else if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_RT_FREQUENCY)
-    {
-        if(tool.config.realtime && trace_size != 0)
-            tool.config.realtime->frequency = *static_cast<uint64_t*>(trace_events);
-    }
-    else if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_REALTIME)
-    {
-        if(tool.config.realtime && trace_size != 0)
-            tool.config.realtime->add(
-                tool.config.shader_engine, static_cast<realtime_t*>(trace_events), trace_size);
-    }
-    else if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_INST_OTHER_SIMD)
-    {
-        using inst_t    = rocprofiler_thread_trace_decoder_inst_other_simd_t;
-        const auto* ptr = static_cast<const inst_t*>(trace_events);
-
-        if(trace_size > 0 && ptr != nullptr)
-        {
-            std::vector<inst_t> recs(ptr, ptr + trace_size);
-            const int           se = tool.config.shader_engine;
-            tool.config.filemgr->add_other_simd_data(se, recs);
-        }
-    }
-    else if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_SHADERDATA)
-    {
-        using shaderdata_t = rocprofiler_thread_trace_decoder_shaderdata_t;
-        const auto* ptr    = static_cast<const shaderdata_t*>(trace_events);
-        if(trace_size > 0)
-        {
-            const int se = tool.config.shader_engine;
-            tool.config.filemgr->add_shaderdata_data(se, ptr, trace_size);
-        }
-    }
-
-    if(trace_id != ROCPROFILER_THREAD_TRACE_DECODER_RECORD_WAVE) return;
-
-    bool bInvalid = false;
-    for(size_t wave_n = 0; wave_n < trace_size; wave_n++)
-    {
-        const auto& wave           = static_cast<const wave_t*>(trace_events)[wave_n];
-        int64_t     prev_inst_time = wave.begin_time;
-
-        for(size_t j = 0; j < wave.instructions_size; j++)
+        if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_INFO)
         {
             auto* infos = (rocprofiler_thread_trace_decoder_info_t*) trace_events;
             for(size_t i = 0; i < trace_size; i++)
@@ -125,11 +63,13 @@ get_trace_data(rocprofiler_thread_trace_decoder_record_type_t trace_id,
         else if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_OCCUPANCY)
         {
             for(size_t i = 0; i < trace_size; i++)
-                tool.config.occupancy.push_back(static_cast<const occupancy_t*>(trace_events)[i]);
+                tool.config.occupancy.push_back(
+                    static_cast<const occupancy_t*>(trace_events)[i]);
         }
         else if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_PERFEVENT)
         {
-            PerfcounterFile(tool.config, static_cast<perfevent_t*>(trace_events), trace_size);
+            PerfcounterFile(
+                tool.config, static_cast<perfevent_t*>(trace_events), trace_size);
         }
         else if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_RT_FREQUENCY)
         {
@@ -139,41 +79,63 @@ get_trace_data(rocprofiler_thread_trace_decoder_record_type_t trace_id,
         else if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_REALTIME)
         {
             if(tool.config.realtime && trace_size != 0)
-                tool.config.realtime->add(
-                    tool.config.shader_engine, static_cast<realtime_t*>(trace_events), trace_size);
+                tool.config.realtime->add(tool.config.shader_engine,
+                                          static_cast<realtime_t*>(trace_events),
+                                          trace_size);
         }
-
-        if(trace_id != ROCPROFILER_THREAD_TRACE_DECODER_RECORD_WAVE)
-            return ROCPROFILER_THREAD_TRACE_DECODER_STATUS_SUCCESS;
-
-        bool bInvalid = false;
-        for(size_t wave_n = 0; wave_n < trace_size; wave_n++)
+        else if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_INST_OTHER_SIMD)
         {
-            const auto& wave           = static_cast<const wave_t*>(trace_events)[wave_n];
-            int64_t     prev_inst_time = wave.begin_time;
+            using inst_t    = rocprofiler_thread_trace_decoder_inst_other_simd_t;
+            const auto* ptr = static_cast<const inst_t*>(trace_events);
 
-            for(size_t j = 0; j < wave.instructions_size; j++)
+            if(trace_size > 0 && ptr != nullptr)
             {
-                const auto& inst = wave.instructions_array[j];
-                if(inst.pc.code_object_id == 0 && inst.pc.address == 0) continue;
-
-                try
-                {
-                    auto& line = tool.get(inst.pc);
-                    line.hitcount += 1;
-                    line.latency += inst.duration;
-                    line.stall += inst.stall;
-                    line.idle += std::max<int64_t>(inst.time - prev_inst_time, 0);
-                } catch(...)
-                {
-                    bInvalid = true;
-                }
-                prev_inst_time = std::max(prev_inst_time, inst.time + inst.duration);
+                std::vector<inst_t> recs(ptr, ptr + trace_size);
+                const int           se = tool.config.shader_engine;
+                tool.config.filemgr->add_other_simd_data(se, recs);
             }
-
-            WaveFile(tool.config, wave);
         }
-        if(bInvalid) ROCP_WARNING << "Could not fetch some instructions!";
+        else if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_SHADERDATA)
+        {
+            using shaderdata_t = rocprofiler_thread_trace_decoder_shaderdata_t;
+            const auto* ptr    = static_cast<const shaderdata_t*>(trace_events);
+            if(trace_size > 0)
+            {
+                const int se = tool.config.shader_engine;
+                tool.config.filemgr->add_shaderdata_data(se, ptr, trace_size);
+            }
+        }
+        else if(trace_id == ROCPROFILER_THREAD_TRACE_DECODER_RECORD_WAVE)
+        {
+            bool bInvalid = false;
+            for(size_t wave_n = 0; wave_n < trace_size; wave_n++)
+            {
+                const auto& wave           = static_cast<const wave_t*>(trace_events)[wave_n];
+                int64_t     prev_inst_time = wave.begin_time;
+
+                for(size_t j = 0; j < wave.instructions_size; j++)
+                {
+                    const auto& inst = wave.instructions_array[j];
+                    if(inst.pc.code_object_id == 0 && inst.pc.address == 0) continue;
+
+                    try
+                    {
+                        auto& line = tool.get(inst.pc);
+                        line.hitcount += 1;
+                        line.latency += inst.duration;
+                        line.stall += inst.stall;
+                        line.idle += std::max<int64_t>(inst.time - prev_inst_time, 0);
+                    } catch(...)
+                    {
+                        bInvalid = true;
+                    }
+                    prev_inst_time = std::max(prev_inst_time, inst.time + inst.duration);
+                }
+
+                WaveFile(tool.config, wave);
+            }
+            if(bInvalid) ROCP_WARNING << "Could not fetch some instructions!";
+        }
 
         return ROCPROFILER_THREAD_TRACE_DECODER_STATUS_SUCCESS;
     } catch(std::exception& e)

@@ -29,7 +29,6 @@
 
 #include "lib/rocprofiler-sdk/registration.hpp"
 
-#include <dlfcn.h>
 #include <algorithm>
 #include <fstream>
 #include <iostream>

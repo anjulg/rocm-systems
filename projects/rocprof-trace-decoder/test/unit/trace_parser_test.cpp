@@ -23,7 +23,7 @@
 #include "trace_parser.hpp"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "rocprof_trace_decoder.h"
+#include "rocprof_trace_decoder/rocprof_trace_decoder.h"
 #include "stitch/stitch.hpp"
 
 // Forward declarations for internal functions

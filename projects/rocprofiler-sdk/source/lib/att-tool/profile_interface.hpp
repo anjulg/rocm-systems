@@ -26,7 +26,7 @@
 #endif
 #pragma once
 
-#include <rocprof_trace_decoder.h>
+#include <rocprof_trace_decoder/rocprof_trace_decoder.h>
 
 #include <cxxabi.h>
 #include <array>

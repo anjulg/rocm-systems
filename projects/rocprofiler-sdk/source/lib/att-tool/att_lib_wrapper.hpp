@@ -26,7 +26,7 @@
 #include "lib/common/codeobj_load_info.hpp"
 #include "lib/common/filesystem.hpp"
 
-#include <rocprof_trace_decoder.h>
+#include <rocprof_trace_decoder/rocprof_trace_decoder.h>
 
 #include <algorithm>
 #include <fstream>

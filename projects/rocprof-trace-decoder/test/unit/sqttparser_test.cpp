@@ -23,7 +23,7 @@
 #include <gtest/gtest.h>
 #include <string>
 
-#include "rocprof_trace_decoder.h"
+#include "rocprof_trace_decoder/rocprof_trace_decoder.h"
 
 TEST(ApiStringTest, AllInfoStrings)
 {

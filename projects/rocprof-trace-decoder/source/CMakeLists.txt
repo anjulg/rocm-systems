@@ -65,8 +65,15 @@ file(
 
 # Public headers to install
 set(TTD_PUBLIC_HEADERS
-    ${TTD_PROJECT_SOURCE_DIR}/include/rocprof_trace_decoder.h ${TTD_PROJECT_SOURCE_DIR}/include/trace_decoder_types.h
-    ${TTD_PROJECT_SOURCE_DIR}/include/trace_decoder_instrument.h)
+    ${TTD_PROJECT_SOURCE_DIR}/include/rocprof_trace_decoder/rocprof_trace_decoder.h
+    ${TTD_PROJECT_SOURCE_DIR}/include/rocprof_trace_decoder/trace_decoder_types.h
+    ${TTD_PROJECT_SOURCE_DIR}/include/rocprof_trace_decoder/trace_decoder_instrument.h)
+
+set(TTD_PUBLIC_CXX_HEADERS
+    ${TTD_PROJECT_SOURCE_DIR}/include/rocprof_trace_decoder/cxx/code_printing.hpp
+    ${TTD_PROJECT_SOURCE_DIR}/include/rocprof_trace_decoder/cxx/common.hpp
+    ${TTD_PROJECT_SOURCE_DIR}/include/rocprof_trace_decoder/cxx/disassembly.hpp
+    ${TTD_PROJECT_SOURCE_DIR}/include/rocprof_trace_decoder/cxx/segment.hpp)
 
 # --- COMGR support (optional) ---
 if(NOT DEFINED DISABLE_COMGR)
@@ -163,7 +170,12 @@ install(
 # --- Install public headers ---
 install(
     FILES ${TTD_PUBLIC_HEADERS}
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rocprof-trace-decoder
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rocprof-trace-decoder/rocprof_trace_decoder
+    COMPONENT devel)
+
+install(
+    FILES ${TTD_PUBLIC_CXX_HEADERS}
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rocprof-trace-decoder/rocprof_trace_decoder/cxx
     COMPONENT devel)
 
 # --- CMake package config for find_package(rocprof-trace-decoder) ---

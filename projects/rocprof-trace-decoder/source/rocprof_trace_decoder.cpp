@@ -20,7 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include "rocprof_trace_decoder.h"
+#include "rocprof_trace_decoder/rocprof_trace_decoder.h"
 
 #include <atomic>
 #include <cstdint>
@@ -37,7 +37,7 @@
 #include "trace_parser.hpp"
 
 #ifndef ROCPROF_TRACE_DECODER_COMGR_DISABLED
-#    include "cxx/code_printing.hpp"
+#    include "rocprof_trace_decoder/cxx/code_printing.hpp"
 #endif
 
 #define PUBLIC_API __attribute__((visibility("default")))

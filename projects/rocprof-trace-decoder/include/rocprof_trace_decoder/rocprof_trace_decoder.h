@@ -117,7 +117,24 @@ typedef struct
 } rocprof_trace_decoder_handle_t;
 
 /**
- * @brief Creates a decoder handle that can load code objects and decode traces.
+ * @defgroup decoder_handle Handle-based Decoder API
+ *
+ * The decoder supports two mutually exclusive modes for ISA resolution during trace parsing.
+ * Only one needs to be configured before calling rocprof_trace_decoder_parse_data():
+ *
+ * **Mode 1 — Built-in disassembly (requires COMGR):**
+ *   Load code objects via rocprof_trace_decoder_codeobj_load(). The decoder uses COMGR
+ *   internally to disassemble instructions. No ISA callback is needed.
+ *
+ * **Mode 2 — Custom ISA callback:**
+ *   Set a callback via rocprof_trace_decoder_set_isa_callback(). The decoder calls it
+ *   for every instruction encountered during parsing. No code objects need to be loaded.
+ *
+ * @{
+ */
+
+/**
+ * @brief Creates a decoder handle.
  * @param[out] handle The handle to create.
  * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_SUCCESS on success.
  */
@@ -134,7 +151,10 @@ rocprofiler_thread_trace_decoder_status_t
 rocprof_trace_decoder_destroy_handle(rocprof_trace_decoder_handle_t handle);
 
 /**
- * @brief Loads a code object for disassembly.
+ * @brief Loads a code object for the decoder's built-in disassembly (Mode 1).
+ *
+ * Not required when using a custom ISA callback (Mode 2).
+ *
  * @param[in] handle The decoder handle.
  * @param[in] load_id Unique load identifier for the code object.
  * @param[in] load_addr Load address (base virtual address) of the code object.
@@ -142,7 +162,7 @@ rocprof_trace_decoder_destroy_handle(rocprof_trace_decoder_handle_t handle);
  * @param[in] data Pointer to the code object ELF data.
  * @param[in] data_size Size of the code object data in bytes.
  * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_SUCCESS on success.
- * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_NOT_IMPLEMENTED if COMGR support is not available.
+ * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_NOT_IMPLEMENTED if COMGR is not available.
  * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR on generic error.
  */
 rocprofiler_thread_trace_decoder_status_t
@@ -154,11 +174,11 @@ rocprof_trace_decoder_codeobj_load(rocprof_trace_decoder_handle_t handle,
                                    uint64_t                       data_size);
 
 /**
- * @brief Unloads a code object previously loaded with rocprof_trace_decoder_codeobj_load.
+ * @brief Unloads a code object previously loaded with rocprof_trace_decoder_codeobj_load().
  * @param[in] handle The decoder handle.
  * @param[in] load_id The load identifier of the code object to unload.
  * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_SUCCESS on success.
- * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_NOT_IMPLEMENTED if COMGR support is not available.
+ * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_NOT_IMPLEMENTED if COMGR is not available.
  * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR on generic error.
  */
 rocprofiler_thread_trace_decoder_status_t
@@ -166,11 +186,14 @@ rocprof_trace_decoder_codeobj_unload(rocprof_trace_decoder_handle_t handle,
                                      uint64_t                       load_id);
 
 /**
- * @brief Sets a custom ISA callback on the decoder handle.
- * When set, the decoder will use this callback for ISA resolution instead of
- * COMGR-based code object disassembly. Set callback to NULL to clear.
+ * @brief Sets a custom ISA callback for trace parsing (Mode 2).
+ *
+ * When set, the decoder uses this callback for all ISA resolution instead of
+ * the built-in COMGR disassembly. Code objects do not need to be loaded.
+ * Set callback to NULL to revert to built-in disassembly (Mode 1).
+ *
  * @param[in] handle The decoder handle.
- * @param[in] callback The ISA callback, or NULL to use COMGR (default).
+ * @param[in] callback The ISA callback, or NULL to use built-in disassembly.
  * @param[in] userdata Userdata passed to the callback.
  * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_SUCCESS on success.
  */
@@ -181,16 +204,19 @@ rocprof_trace_decoder_set_isa_callback(rocprof_trace_decoder_handle_t       hand
 
 /**
  * @brief Parses a buffer of thread trace data.
- * ISA resolution uses COMGR (via loaded code objects) unless overridden with
- * rocprof_trace_decoder_set_isa_callback.
+ *
+ * Requires either loaded code objects (Mode 1) or a custom ISA callback (Mode 2)
+ * to be configured on the handle before calling. See @ref decoder_handle for details.
+ *
  * @param[in] handle The decoder handle.
  * @param[in] data Pointer to the shader engine trace data.
  * @param[in] data_size Size of the trace data in bytes.
- * @param[in] trace_callback Callback where the trace data is returned to.
+ * @param[in] trace_callback Callback invoked for each decoded record.
  * @param[in] userdata Userdata passed back to caller via trace_callback.
  * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_SUCCESS on success.
  * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_NOT_IMPLEMENTED if no ISA source is
- * available (no COMGR and no isa_callback set).
+ * configured (no COMGR and no ISA callback set).
+ * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR_INVALID_SHADER_DATA on malformed input.
  * @retval ::ROCPROFILER_THREAD_TRACE_DECODER_STATUS_ERROR on generic error.
  */
 rocprofiler_thread_trace_decoder_status_t
@@ -199,6 +225,8 @@ rocprof_trace_decoder_parse_data(rocprof_trace_decoder_handle_t         handle,
                                  uint64_t                               data_size,
                                  rocprof_trace_decoder_trace_callback_t trace_callback,
                                  void*                                  userdata);
+
+/** @} */
 
 #ifdef __cplusplus
 }

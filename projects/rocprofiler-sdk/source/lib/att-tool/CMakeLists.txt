@@ -3,10 +3,6 @@
 #
 rocprofiler_activate_clang_tidy()
 
-if(NOT TARGET rocprof-trace-decoder::rocprof-trace-decoder)
-    find_package(rocprof-trace-decoder REQUIRED CONFIG)
-endif()
-
 set(ATT_TOOL_SOURCE_FILES
     att_lib_wrapper.cpp
     code.cpp

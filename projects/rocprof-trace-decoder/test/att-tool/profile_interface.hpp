@@ -38,7 +38,7 @@
 #include "code.hpp"
 #include "wave.hpp"
 #include "util.hpp"
-#include "rocprof_trace_decoder.h"
+#include "rocprof_trace_decoder/rocprof_trace_decoder.h"
 
 #define C_API_BEGIN                                                                                \
     try                                                                                            \

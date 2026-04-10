@@ -35,7 +35,7 @@
 #include <rocprofiler-sdk/registration.h>
 #include <rocprofiler-sdk/rocprofiler.h>
 
-#include <rocprof_trace_decoder.h>
+#include <rocprof_trace_decoder/rocprof_trace_decoder.h>
 
 #include <algorithm>
 #include <atomic>

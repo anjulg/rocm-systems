@@ -22,7 +22,7 @@
 
 #include "att_lib_wrapper.hpp"
 #include "outputfile.hpp"
-#include "rocprof_trace_decoder.h"
+#include "rocprof_trace_decoder/rocprof_trace_decoder.h"
 
 #include <iostream>
 #include <mutex>

@@ -22,8 +22,8 @@
 
 #pragma once
 
-#include "cxx/common.hpp"
-#include "cxx/segment.hpp"
+#include "rocprof_trace_decoder/cxx/common.hpp"
+#include "rocprof_trace_decoder/cxx/segment.hpp"
 
 // Pull the unified types into the global namespace for internal library use.
 using address_range_t = rocprof_trace_decoder::codeobj::address_range_t;

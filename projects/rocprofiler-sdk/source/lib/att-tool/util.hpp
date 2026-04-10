@@ -27,7 +27,7 @@
 #define TOOL_VERSION_REV   0
 #define TOOL_VERSION       "3.0.0"
 
-#include <trace_decoder_types.h>
+#include <rocprof_trace_decoder/trace_decoder_types.h>
 #include <rocprofiler-sdk/cxx/codeobj/code_printing.hpp>
 #include "lib/common/logging.hpp"
 

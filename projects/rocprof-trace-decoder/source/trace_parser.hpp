@@ -34,9 +34,9 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include "cxx/common.hpp"
+#include "rocprof_trace_decoder/cxx/common.hpp"
 #include "segment.hpp"
-#include "trace_decoder_instrument.h"
+#include "rocprof_trace_decoder/trace_decoder_instrument.h"
 
 inline bool bValid(pcinfo_t pc) { return pc.code_object_id != 0 || pc.address != 0; }
 

@@ -23,7 +23,7 @@
 #pragma once
 
 #include "util.hpp"
-#include "rocprof_trace_decoder.h"
+#include "rocprof_trace_decoder/rocprof_trace_decoder.h"
 
 #include <algorithm>
 #include <fstream>
