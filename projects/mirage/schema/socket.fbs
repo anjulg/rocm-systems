@@ -1,0 +1,198 @@
+include "common.fbs";
+include "simulator.fbs";
+
+namespace mirages.socket;
+
+
+table TimeRequest {
+    session_id: string;
+}
+
+table HealthRequest {
+    session_id: string;
+}
+
+
+table HealthReply {
+    healthy : bool;
+    status : HealthStatus;
+}
+
+table TimeReply {
+    time: Time (required);
+}
+
+
+
+table AttachRequest {
+    run_id: string;
+    
+    /// data to send to the run's stdin. The server will read from this stream and write to the run's stdin.
+    stream: StreamData;
+}
+
+
+
+table AttachReply {
+    data: StreamData;
+    exit: RunExit;
+}
+
+
+// ---------------------------------------------------------------------------
+//  Simulator registration — called by the simulator → daemon on connect
+// ---------------------------------------------------------------------------
+
+/// Sent by a simulator process when it first connects to the daemon socket.
+///
+/// The simulator passes its full identity and capabilities.  The daemon
+/// uses this to populate the dashboard's simulator list and to match
+/// `ProfileDef.simulator` names.
+table RegisterSimRequest {
+    info: mirages.simulator.SimulatorInfo (required);
+}
+
+/// Daemon acknowledges the registration.
+table RegisterSimReply {
+    /// Whether the registration was accepted.
+    ok: bool;
+
+    /// If `ok` is false, a human-readable reason.
+    error: string;
+}
+
+
+// ---------------------------------------------------------------------------
+//  Simulator-directed RPCs — daemon → simulator over the same connection
+// ---------------------------------------------------------------------------
+
+/// Request the list of supported GPU models.
+/// Convenience for refreshing GPU availability without re-querying
+/// the full SimulatorInfo.
+table GetSupportedGpusRequest {}
+
+/// Response to GetSupportedGpusRequest.
+table GetSupportedGpusReply {
+    gpus: [GpuDef] (required);
+}
+
+/// Register a user-designed custom GPU topology.
+/// Only sent to simulators that advertised `supports_custom_gpus = true`.
+table SetCustomGpuRequest {
+    gpu: mirages.simulator.CustomGpuDef (required);
+}
+
+/// Response to SetCustomGpuRequest.
+/// Returns the newly created GpuDef on success.
+table SetCustomGpuReply {
+    gpu: GpuDef (required);
+}
+
+/// Create a new simulation session and return the container spec.
+///
+/// The simulator should:
+///   1. Generate any configuration files needed inside the container
+///      (e.g. JSON simulation configs, FlatBuffers schemas).
+///   2. Determine which host libraries need to be bind-mounted.
+///   3. Compute the environment variables required for interposition
+///      (e.g. LD_PRELOAD).
+///   4. Return a ContainerDef that the daemon can hand directly to an
+///      OCI runtime.
+///
+/// The simulator may allocate internal bookkeeping state keyed by
+/// `session.name`.
+table CreateSessionRequest {
+    session: SessionDef (required);
+    profile: ProfileDef (required);
+}
+
+/// Response to CreateSessionRequest.
+/// Returns the full container specification for the OCI runtime.
+table CreateSessionReply {
+    container: mirages.simulator.ContainerDef (required);
+}
+
+/// Tear down a simulation session and release resources.
+///
+/// The simulator should clean up any internal state, temp files, or
+/// resources associated with this session.
+table DeleteSessionRequest {
+    session_id: string (required);
+}
+
+/// Response to DeleteSessionRequest.  Empty on success.
+table DeleteSessionReply {}
+
+/// Query the health of a running session.
+///
+/// The daemon polls this periodically.  Simulators should return
+/// Healthy when the simulation engine inside the container is
+/// responsive and processing events.
+table GetSessionHealthRequest {
+    session_id: string (required);
+}
+
+/// Response to GetSessionHealthRequest.
+table GetSessionHealthReply {
+    health: mirages.simulator.SessionHealth (required);
+}
+
+/// Query performance counters for a running session.
+///
+/// Returns simulation-time vs wall-time metrics, tick counts, IPC,
+/// and any simulator-specific counters.
+table GetSessionPerfRequest {
+    session_id: string (required);
+}
+
+/// Response to GetSessionPerfRequest.
+table GetSessionPerfReply {
+    perf: mirages.simulator.SessionPerf (required);
+}
+
+/// Transform a run request into a simulator-aware ExecDef.
+///
+/// Called by the daemon before starting every run inside a session.
+/// The simulator can:
+///   - Inject or override environment variables (e.g. ROCJITSU_CONFIG,
+///     HSA_OVERRIDE_GFX_VERSION).
+///   - Wrap or rewrite the command (e.g. prefix with a simulator launcher).
+///   - Append extra arguments.
+///
+/// The returned ExecDef is what the daemon actually executes inside the
+/// container.
+table GetRunDefRequest {
+    run: RunDef (required);
+}
+
+/// Response to GetRunDefRequest.
+/// Returns the (possibly modified) ExecDef with simulator-specific
+/// env vars and command transformations applied.
+table GetRunDefReply {
+    exec: ExecDef (required);
+}
+
+
+// ---------------------------------------------------------------------------
+//  Unified RPC service
+// ---------------------------------------------------------------------------
+
+rpc_service Daemon {
+    // -- General daemon RPCs (dashboard / client → daemon) --
+    Health(HealthRequest) : HealthReply;
+    Time(TimeRequest) : TimeReply;    
+    AttachRun(AttachRequest) : AttachReply (streaming: "bidi");
+
+    // -- Simulator registration (simulator → daemon on connect) --
+    RegisterSim(RegisterSimRequest) : RegisterSimReply;
+
+    // -- Simulator-directed RPCs (daemon → simulator) --
+    GetSupportedGpus(GetSupportedGpusRequest) : GetSupportedGpusReply;
+    SetCustomGpu(SetCustomGpuRequest) : SetCustomGpuReply;
+    CreateSession(CreateSessionRequest) : CreateSessionReply;
+    DeleteSession(DeleteSessionRequest) : DeleteSessionReply;
+    GetSessionHealth(GetSessionHealthRequest) : GetSessionHealthReply;
+    GetSessionPerf(GetSessionPerfRequest) : GetSessionPerfReply;
+    GetRunDef(GetRunDefRequest) : GetRunDefReply;
+}
+

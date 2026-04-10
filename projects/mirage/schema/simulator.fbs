@@ -1,0 +1,169 @@
+/// Simulator plugin interface — FlatBuffer data types.
+///
+/// This schema defines the data structures that flow between the mirages
+/// daemon and a simulator plugin.  The RPC methods themselves are defined
+/// in `socket.fbs` as part of the unified `Daemon` service.
+///
+/// A simulator is a standalone executable that the daemon spawns as a
+/// child process.  On startup the simulator connects back to the daemon's
+/// socket and registers itself.  All subsequent communication happens
+/// over that socket using the FlatBuffer RPC service defined in
+/// `socket.fbs`.
+///
+/// Lifecycle:
+///   1. Daemon spawns the simulator executable, passing the daemon
+///      socket address (e.g. via a well-known env var or CLI flag).
+///   2. Simulator connects to the daemon socket and calls `RegisterSim`
+///      with its `SimulatorInfo`.
+///   3. The daemon may then call simulator-directed RPCs on the same
+///      connection: `CreateSession`, `DeleteSession`,
+///      `GetSessionHealth`, `GetSessionPerf`, `GetRunDef`,
+///      `SetCustomGpu`.
+///   4. When the daemon shuts down it closes the connection.  The
+///      simulator should clean up and exit.
+
+include "common.fbs";
+include "container.fbs";
+
+namespace mirages.simulator;
+
+
+// ===========================================================================
+//  Data types
+// ===========================================================================
+
+
+// ---------------------------------------------------------------------------
+//  Simulator identity
+// ---------------------------------------------------------------------------
+
+/// Metadata that a simulator returns to identify itself to the daemon.
+///
+/// Sent in response to a `GetInfo` request.  The daemon uses this to
+/// populate the dashboard's simulator list and to match
+/// `ProfileDef.simulator` names.
+table SimulatorInfo {
+    /// A unique machine-readable identifier for this simulator,
+    /// e.g. "rocjitsu", "gem5-gpu", "timing-model-x".
+    /// Must be stable across versions — profiles reference this name.
+    name: string (required);
+
+    /// SemVer version string, e.g. "0.4.1".
+    version: string (required);
+
+    /// Human-readable one-liner shown in the dashboard.
+    description: string;
+
+    /// The list of GPU models this simulator can emulate out of the box.
+    /// Each entry should have a unique `GpuDef.name`.
+    supported_gpus: [GpuDef] (required);
+
+    /// Whether this simulator allows the user to design completely custom
+    /// GPU topologies beyond the pre-defined `supported_gpus` list.
+    /// When true, the dashboard will show a "Design Custom GPU" button.
+    supports_custom_gpus: bool = false;
+
+    /// The simulation modes this simulator supports.
+    /// If empty, all modes defined in `SimulatorMode` are assumed supported.
+    supported_modes: [SimulatorMode];
+}
+
+
+// ---------------------------------------------------------------------------
+//  Custom GPU design
+// ---------------------------------------------------------------------------
+
+/// A user-designed custom GPU topology.
+///
+/// Simulators that set `SimulatorInfo.supports_custom_gpus = true` must
+/// handle `SetCustomGpu` requests.  The `topology_json` field carries a
+/// simulator-specific topology description (e.g. rocjitsu's hierarchical
+/// component tree) as a UTF-8 JSON string.
+///
+/// The simulator validates the JSON against its own schema, and if valid,
+/// responds with a `GpuDef` that the daemon can use in profiles.
+table CustomGpuDef {
+    /// A human-readable name the user chose for this custom GPU,
+    /// e.g. "my-cdna4-256cu".
+    name: string (required);
+
+    /// Simulator-specific topology description encoded as a JSON string.
+    ///
+    /// For rocjitsu this is the `topology` subtree of a simulation config
+    /// (see experimental/rocjitsu/schemas/simulation_config.fbs).
+    /// Other simulators define their own topology format.
+    topology_json: string (required);
+
+    /// Optional base GPU to derive from.  If set, the simulator should
+    /// start with this GPU's defaults and override only the fields
+    /// present in `topology_json`.
+    base_gpu: string;
+}
+
+
+// ---------------------------------------------------------------------------
+//  Session health & performance
+// ---------------------------------------------------------------------------
+
+/// Health status of a running simulation session.
+///
+/// Returned in a `SessionHealthReply`.  The daemon polls this
+/// periodically and surfaces it in the dashboard.
+table SessionHealth {
+    /// The session this health report is for.
+    session_id: string (required);
+
+    /// Overall health status.  Simulators should return `Healthy` when
+    /// the simulation engine is responsive and processing events.
+    status: HealthStatus;
+
+    /// Wall-clock uptime since the session was created.
+    uptime: Time;
+
+    /// If status is Unhealthy, a human-readable explanation.
+    error_message: string;
+
+    /// Optional structured diagnostics as a JSON string.
+    /// Simulators can include whatever is useful for debugging
+    /// (event queue depth, thread status, memory usage, etc.).
+    diagnostics_json: string;
+}
+
+/// Performance counters for a running simulation session.
+///
+/// Returned in a `SessionPerfReply`.  These metrics are displayed
+/// in the dashboard's session detail view and can be used for auto-scaling
+/// decisions in cluster mode.
+table SessionPerf {
+    /// The session this perf report is for.
+    session_id: string (required);
+
+    /// Simulated time elapsed inside the simulator.
+    /// For cycle-accurate simulators this reflects simulated clock ticks
+    /// converted to wall-clock equivalent.
+    simulated_time: Time;
+
+    /// Actual wall-clock time elapsed since session start.
+    wall_time: Time;
+
+    /// Total simulation ticks (engine-specific unit).
+    /// For rocjitsu this is simdojo discrete-event ticks.
+    ticks: uint64;
+
+    /// Instructions per cycle (IPC) — a measure of how efficiently
+    /// the simulated GPU is executing workloads.
+    /// 0.0 if the simulator does not track IPC.
+    ipc: float64;
+
+    /// Ratio of simulated time to wall time.
+    /// Values > 1.0 mean the simulator runs faster than real-time.
+    /// 0.0 if not applicable.
+    simulation_speed: float64;
+
+    /// Number of active simulated wavefronts / threads / contexts.
+    active_contexts: uint32;
+
+    /// Optional additional metrics as a JSON string.
+    /// Simulators can expose whatever counters they have.
+    extra_json: string;
+}

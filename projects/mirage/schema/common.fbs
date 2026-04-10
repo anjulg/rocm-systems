@@ -82,7 +82,7 @@ table RunExit {
 }
 
 /// a request to run a command
-table RunDef {
+table ExecDef {
     /// the program to run
     command: string (required);
     
@@ -113,12 +113,19 @@ table StreamData {
 /// The daemon resolves the session, looks up its simulator, and calls
 /// `get_exec_run_def` to let the simulator inject any extra environment
 /// variables or wrapper commands before the run is actually started.
-table ExecDef {
+table RunDef {
     /// the session to use for this execution
     session: string (required);
 
-    /// what to run
-    run: RunDef (required);
+
+
+    /// what to run on the head
+    exec: ExecDef (required);
+
+    /// optional command to run on the workers.  If not set, the workers won't run any command.
+    worker_exec: ExecDef;
+
+
 }
 
 table SessionDef {
@@ -136,11 +143,15 @@ table SessionDef {
 
 
 table ClusterDef {
-    /// a unique name for this cluster
-    head_adress: string (required);
+    name: string;
+    
+    head_adress: string;
 
-    /// the sessions that belong to this cluster
-    sessions: [string] (required);
+    /// the session to use for this cluster
+    head_exec : ExecDef;
+    workers_adress: [string] ;
+
+    worker_exec : ExecDef;
 }
 
 
@@ -154,9 +165,7 @@ enum HealthStatus : byte {
 
 /// a picosecond accurate time stamp
 struct Time {
-    /// unix timestamp in seconds
-    /// might just be the simulator start time
-    /// you may need to add the picoseconds field to get the actual time
+    /// you need to add the picoseconds field to get the actual time
     seconds: uint64;
     /// additional picoseconds to add to the seconds field
     picoseconds: uint64;
