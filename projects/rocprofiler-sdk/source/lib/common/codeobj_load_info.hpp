@@ -20,37 +20,21 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include "lib/rocprofiler-sdk/thread_trace/dl.hpp"
-#include "lib/common/filesystem.hpp"
+#pragma once
 
-#include <dlfcn.h>
-#include <cassert>
-#include <cstdlib>
+#include <cstddef>
+#include <string>
 
 namespace rocprofiler
 {
-namespace thread_trace
+namespace tool
 {
-DL::DL(const char* libpath)
+struct CodeobjLoadInfo
 {
-    if(libpath == nullptr) return;
-
-    auto path = common::filesystem::path(libpath) / "librocprof-trace-decoder.so";
-
-    handle = dlopen(path.c_str(), RTLD_LAZY | RTLD_LOCAL);
-    if(!handle) return;
-
-    att_parse_data_fn =
-        reinterpret_cast<ParseFn*>(dlsym(handle, "rocprof_trace_decoder_parse_data"));
-    att_info_fn = reinterpret_cast<InfoFn*>(dlsym(handle, "rocprof_trace_decoder_get_info_string"));
-    att_status_fn =
-        reinterpret_cast<StatusFn*>(dlsym(handle, "rocprof_trace_decoder_get_status_string"));
+    std::string name{};
+    size_t      id{0};
+    size_t      addr{0};
+    size_t      size{0};
 };
-
-DL::~DL()
-{
-    if(handle) dlclose(handle);
-}
-
-}  // namespace thread_trace
+}  // namespace tool
 }  // namespace rocprofiler

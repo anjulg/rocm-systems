@@ -34,7 +34,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include "common.hpp"
+#include "cxx/common.hpp"
 #include "segment.hpp"
 #include "trace_decoder_instrument.h"
 
@@ -371,10 +371,10 @@ public:
     template <typename TokenType> pcinfo_t get_wave_start(const TokenType& token)
     {
         constexpr uint64_t BITMASK = (1ul << 48) - 1;
-        return table.ToPcV2((wave_start_addr.at_reg(token) << 8) & BITMASK);
+        return ToPcV2(table, (wave_start_addr.at_reg(token) << 8) & BITMASK);
     }
 
-    pcinfo_t get_wave_start_delayed(uint64_t addr) { return table_from_start.ToPcV2(addr); }
+    pcinfo_t get_wave_start_delayed(uint64_t addr) { return ToPcV2(table_from_start, addr); }
 };
 
 template <typename WaveArray> struct AnalysisReturnData

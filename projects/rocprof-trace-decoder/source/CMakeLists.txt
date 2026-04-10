@@ -65,8 +65,36 @@ file(
 
 # Public headers to install
 set(TTD_PUBLIC_HEADERS
-    ${TTD_PROJECT_SOURCE_DIR}/include/trace_decoder_api.h ${TTD_PROJECT_SOURCE_DIR}/include/trace_decoder_types.h
+    ${TTD_PROJECT_SOURCE_DIR}/include/rocprof_trace_decoder.h ${TTD_PROJECT_SOURCE_DIR}/include/trace_decoder_types.h
     ${TTD_PROJECT_SOURCE_DIR}/include/trace_decoder_instrument.h)
+
+# --- COMGR support (optional) ---
+if(NOT DEFINED DISABLE_COMGR)
+    option(DISABLE_COMGR "Disable dependency on amd_comgr disassembly" OFF)
+endif()
+
+set(TTD_COMGR_LINK_LIBS)
+if(NOT DISABLE_COMGR)
+    find_library(
+        COMGR_LIB
+        NAMES amd_comgr
+        HINTS /opt/rocm/lib)
+    if(COMGR_LIB)
+        message(STATUS "Found amd_comgr: ${COMGR_LIB}")
+        set(TTD_COMGR_LINK_LIBS ${COMGR_LIB})
+        # Locate ROCm include directory for amd_comgr headers
+        find_path(
+            ROCM_INCLUDE_DIR
+            NAMES amd_comgr/amd_comgr.h
+            HINTS /opt/rocm/include)
+        if(NOT ROCM_INCLUDE_DIR)
+            set(ROCM_INCLUDE_DIR "/opt/rocm/include")
+        endif()
+    else()
+        message(WARNING "amd_comgr not found — COMGR features will be stubbed out")
+        set(DISABLE_COMGR ON)
+    endif()
+endif()
 
 # --- Object library (compiled once, reused by shared and static) ---
 add_library(rocprof-trace-decoder-objects OBJECT ${ATT_DECODER_V3_FILES})
@@ -74,10 +102,16 @@ target_include_directories(
     rocprof-trace-decoder-objects
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
     PUBLIC $<BUILD_INTERFACE:${TTD_PROJECT_SOURCE_DIR}/include>)
+if(NOT DISABLE_COMGR)
+    target_include_directories(rocprof-trace-decoder-objects PRIVATE ${ROCM_INCLUDE_DIR})
+endif()
 set_target_properties(rocprof-trace-decoder-objects PROPERTIES POSITION_INDEPENDENT_CODE ON)
 option(SQTT_LOGGING "Enable SQTT logging" OFF)
 if(SQTT_LOGGING)
     target_compile_definitions(rocprof-trace-decoder-objects PRIVATE SQTT_LOGGING)
+endif()
+if(DISABLE_COMGR)
+    target_compile_definitions(rocprof-trace-decoder-objects PRIVATE ROCPROF_TRACE_DECODER_COMGR_DISABLED)
 endif()
 
 # --- Shared library (installed) ---
@@ -85,7 +119,7 @@ add_library(rocprof-trace-decoder SHARED $<TARGET_OBJECTS:rocprof-trace-decoder-
 target_include_directories(
     rocprof-trace-decoder PUBLIC $<BUILD_INTERFACE:${TTD_PROJECT_SOURCE_DIR}/include>
                                  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/rocprof-trace-decoder>)
-target_link_libraries(rocprof-trace-decoder PRIVATE pthread)
+target_link_libraries(rocprof-trace-decoder PRIVATE pthread ${TTD_COMGR_LINK_LIBS})
 set_target_properties(
     rocprof-trace-decoder
     PROPERTIES VERSION ${PROJECT_VERSION}
@@ -97,7 +131,7 @@ set_target_properties(
 # --- Static library (built but NOT installed) ---
 add_library(rocprof-trace-decoder-static STATIC $<TARGET_OBJECTS:rocprof-trace-decoder-objects>)
 target_include_directories(rocprof-trace-decoder-static PUBLIC $<BUILD_INTERFACE:${TTD_PROJECT_SOURCE_DIR}/include>)
-target_link_libraries(rocprof-trace-decoder-static PRIVATE pthread)
+target_link_libraries(rocprof-trace-decoder-static PRIVATE pthread ${TTD_COMGR_LINK_LIBS})
 set_target_properties(rocprof-trace-decoder-static PROPERTIES OUTPUT_NAME rocprof-trace-decoder
                                                               ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 
@@ -108,7 +142,12 @@ if(DEFINED BUILD_TESTS AND BUILD_TESTS)
         rocprof-trace-decoder-sanitized
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
         PUBLIC $<BUILD_INTERFACE:${TTD_PROJECT_SOURCE_DIR}/include>)
-    target_link_libraries(rocprof-trace-decoder-sanitized PRIVATE pthread)
+    target_link_libraries(rocprof-trace-decoder-sanitized PRIVATE pthread ${TTD_COMGR_LINK_LIBS})
+    if(NOT DISABLE_COMGR)
+        target_include_directories(rocprof-trace-decoder-sanitized PRIVATE ${ROCM_INCLUDE_DIR})
+    else()
+        target_compile_definitions(rocprof-trace-decoder-sanitized PRIVATE ROCPROF_TRACE_DECODER_COMGR_DISABLED)
+    endif()
     target_compile_options(rocprof-trace-decoder-sanitized PRIVATE -fsanitize=address,undefined -g -O1)
     target_link_options(rocprof-trace-decoder-sanitized PRIVATE -fsanitize=address,undefined)
     set_target_properties(rocprof-trace-decoder-sanitized PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")

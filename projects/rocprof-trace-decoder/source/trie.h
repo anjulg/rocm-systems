@@ -34,7 +34,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include "common.hpp"
+#include "cxx/common.hpp"
 
 enum class InstCategory
 {

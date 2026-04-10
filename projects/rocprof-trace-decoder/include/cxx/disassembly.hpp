@@ -63,13 +63,9 @@
         return AMD_COMGR_STATUS_ERROR;                                                             \
     }
 
-namespace rocprofiler
-{
-namespace sdk
+namespace rocprof_trace_decoder
 {
 namespace codeobj
-{
-namespace disassembly
 {
 class CodeObjectBinary
 {
@@ -302,7 +298,5 @@ public:
     std::map<uint64_t, SymbolInfo> symbol_map{};
 };
 
-}  // namespace disassembly
 }  // namespace codeobj
-}  // namespace sdk
-}  // namespace rocprofiler
+}  // namespace rocprof_trace_decoder

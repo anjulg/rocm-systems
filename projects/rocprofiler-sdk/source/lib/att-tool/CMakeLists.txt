@@ -3,6 +3,10 @@
 #
 rocprofiler_activate_clang_tidy()
 
+if(NOT TARGET rocprof-trace-decoder::rocprof-trace-decoder)
+    find_package(rocprof-trace-decoder REQUIRED CONFIG)
+endif()
+
 set(ATT_TOOL_SOURCE_FILES
     att_lib_wrapper.cpp
     code.cpp
@@ -40,6 +44,7 @@ target_link_libraries(
             rocprofiler-sdk::rocprofiler-sdk-common-library
             rocprofiler-sdk::rocprofiler-sdk-amd-comgr
             rocprofiler-sdk::rocprofiler-sdk-dw
-            rocprofiler-sdk::rocprofiler-sdk-elf)
+            rocprofiler-sdk::rocprofiler-sdk-elf
+    PUBLIC rocprof-trace-decoder::rocprof-trace-decoder)
 
 add_subdirectory(waitcnt)

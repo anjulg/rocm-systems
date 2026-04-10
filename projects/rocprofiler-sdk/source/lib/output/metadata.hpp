@@ -28,7 +28,7 @@
 #include "kernel_symbol_info.hpp"
 #include "pc_sample_transform.hpp"
 
-#include "lib/att-tool/att_lib_wrapper.hpp"
+#include "lib/common/codeobj_load_info.hpp"
 #include "lib/common/container/small_vector.hpp"
 #include "lib/common/demangle.hpp"
 #include "lib/common/logging.hpp"
@@ -89,10 +89,13 @@
 #define ROCPD_CHECK(RESULT)         ROCPD_CHECK_NESTED(__COUNTER__, RESULT, FATAL)
 #define ROCPD_CHECK_WARNING(RESULT) ROCPD_CHECK_NESTED(__COUNTER__, RESULT, WARNING)
 
+#include "lib/common/codeobj_load_info.hpp"
+
 namespace rocprofiler
 {
 namespace tool
 {
+
 using marker_message_map_t         = std::unordered_map<uint64_t, std::string>;
 using marker_message_ordered_map_t = std::map<uint64_t, std::string>;
 using string_entry_map_t           = std::unordered_map<size_t, std::unique_ptr<std::string>>;
@@ -102,7 +105,7 @@ using code_obj_decoder_t    = rocprofiler::sdk::codeobj::disassembly::CodeobjAdd
 using instruction_t         = rocprofiler::sdk::codeobj::disassembly::Instruction;
 using att_agent_filenames_t = std::pair<rocprofiler_agent_id_t, std::vector<std::string>>;
 using att_filenames_map_t   = std::unordered_map<rocprofiler_dispatch_id_t, att_agent_filenames_t>;
-using code_object_load_info_vec_t = std::vector<rocprofiler::att_wrapper::CodeobjLoadInfo>;
+using code_object_load_info_vec_t = std::vector<CodeobjLoadInfo>;
 template <typename Tp>
 using synced_map = common::Synchronized<Tp, true>;
 template <typename Tp>

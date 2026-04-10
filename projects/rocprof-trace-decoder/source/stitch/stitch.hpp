@@ -29,7 +29,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-#include "trace_decoder_api.h"
+#include "rocprof_trace_decoder.h"
 #include "trace_parser.hpp"
 #include "trie.h"
 

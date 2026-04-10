@@ -23,6 +23,7 @@ project(
     VERSION 0.0.0)
 
 find_package(rocprofiler-sdk REQUIRED)
+find_package(rocprof-trace-decoder REQUIRED)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -50,7 +51,8 @@ target_sources(
 target_link_libraries(
     thread-trace-api-single-test
     PRIVATE rocprofiler-sdk::rocprofiler-sdk rocprofiler-sdk::tests-build-flags
-            rocprofiler-sdk::tests-common-library)
+            rocprofiler-sdk::tests-common-library
+            rocprof-trace-decoder::rocprof-trace-decoder)
 
 rocprofiler_add_integration_execute_test(
     thread-trace-api-single-test
@@ -67,7 +69,8 @@ target_sources(
 target_link_libraries(
     thread-trace-api-multi-test
     PRIVATE rocprofiler-sdk::rocprofiler-sdk rocprofiler-sdk::tests-build-flags
-            rocprofiler-sdk::tests-common-library)
+            rocprofiler-sdk::tests-common-library
+            rocprof-trace-decoder::rocprof-trace-decoder)
 
 rocprofiler_add_integration_execute_test(
     thread-trace-api-multi-test
@@ -84,7 +87,8 @@ target_sources(thread-trace-api-agent-test PRIVATE main.cpp trace_callbacks.cpp 
 target_link_libraries(
     thread-trace-api-agent-test
     PRIVATE rocprofiler-sdk::rocprofiler-sdk rocprofiler-sdk::tests-build-flags
-            rocprofiler-sdk::tests-common-library)
+            rocprofiler-sdk::tests-common-library
+            rocprof-trace-decoder::rocprof-trace-decoder)
 
 rocprofiler_add_integration_execute_test(
     thread-trace-api-agent-test

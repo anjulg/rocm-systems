@@ -46,7 +46,7 @@ struct wave_t : public WaveDataInternal
     void apply_inst(int64_t token_time, int enum_inst, mapped_inst_t mapped, int tt_version);
     void apply_valu_inst(int64_t token_time);
     void apply_immediate(int64_t token_time);
-    void new_pc(int64_t time, int64_t pc_value, class CodeobjTableTranslator& table);
+    void new_pc(int64_t time, int64_t pc_value, CodeobjTableTranslator& table);
 
     // static std::unordered_map<int, const char*> INST_NAMES;
     static mapped_inst_t map_to_common_type(int einst, int dprate, int derate);

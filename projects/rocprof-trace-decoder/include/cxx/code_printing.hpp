@@ -38,15 +38,10 @@
 #include <unordered_map>
 #include <vector>
 
-namespace rocprofiler
-{
-namespace sdk
+namespace rocprof_trace_decoder
 {
 namespace codeobj
 {
-namespace disassembly
-{
-using code_object_id_t = segment::code_object_id_t;
 
 struct Instruction
 {
@@ -301,8 +296,10 @@ public:
 
     std::unique_ptr<Instruction> get(uint64_t vaddr)
     {
-        auto addr_range = table.find_codeobj_in_range(vaddr);
-        return this->Super::get(addr_range.id, vaddr - addr_range.address);
+        address_range_t addr_range;
+        if (!table.find_codeobj_in_range(vaddr, addr_range))
+            return nullptr;
+        return this->Super::get(addr_range.id, vaddr - addr_range.addr);
     }
 
     std::unique_ptr<Instruction> get(code_object_id_t id, uint64_t offset)
@@ -351,10 +348,8 @@ public:
     }
 
 private:
-    segment::CodeobjTableTranslator table{};
+    CodeobjTableTranslator table{};
 };
 
-}  // namespace disassembly
 }  // namespace codeobj
-}  // namespace sdk
-}  // namespace rocprofiler
+}  // namespace rocprof_trace_decoder

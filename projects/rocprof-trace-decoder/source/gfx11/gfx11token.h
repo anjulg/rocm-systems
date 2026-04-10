@@ -25,7 +25,7 @@
 #include <iostream>
 #include <sstream>
 #include <vector>
-#include "common.hpp"
+#include "cxx/common.hpp"
 #include "gfx10/gfx10parser.h"
 #include "gfx10/gfx10token.h"
 

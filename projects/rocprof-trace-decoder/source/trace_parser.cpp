@@ -175,16 +175,16 @@ std::unique_ptr<SQTTParser> AnalyseBinary_internal(
     return nullptr;
 }
 
-pcinfo_t CodeobjTableTranslator::ToPcV2(uint64_t pc)
+pcinfo_t ToPcV2(CodeobjTableTranslator& table, uint64_t pc)
 {
     pcinfo_t pcinfo{.address = pc, .code_object_id = 0};
     try
     {
         address_range_t codeobj;
-        if (this->find_codeobj_in_range(pc, codeobj))
+        if (table.find_codeobj_in_range(pc, codeobj))
         {
             pcinfo.code_object_id = codeobj.id;
-            pcinfo.address = pc - codeobj.vbegin;
+            pcinfo.address = pc - codeobj.addr;
         }
     }
     catch (const std::exception&)

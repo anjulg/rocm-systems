@@ -26,7 +26,7 @@
 #include <iostream>
 #include <sstream>
 #include <vector>
-#include "common.hpp"
+#include "cxx/common.hpp"
 #include "token_types.h"
 #include "trace_parser.hpp"
 

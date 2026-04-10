@@ -26,7 +26,7 @@
 #endif
 #pragma once
 
-#include <rocprofiler-sdk/experimental/thread-trace/trace_decoder.h>
+#include <rocprof_trace_decoder.h>
 
 #include <cxxabi.h>
 #include <array>
@@ -62,7 +62,7 @@ struct ToolData
 {
     ToolData(std::vector<char>&                    data,
              WaveConfig&                           config,
-             rocprofiler_thread_trace_decoder_id_t decoder);
+             rocprof_trace_decoder_handle_t        decoder);
     ~ToolData();
 
     CodeLine& get(pcinfo_t pc);
@@ -73,7 +73,7 @@ struct ToolData
     std::vector<char> shader_data{};
     size_t            num_waves = 0;
 
-    rocprofiler_thread_trace_decoder_id_t decoder{};
+    rocprof_trace_decoder_handle_t        decoder{};
 };
 
 }  // namespace att_wrapper
