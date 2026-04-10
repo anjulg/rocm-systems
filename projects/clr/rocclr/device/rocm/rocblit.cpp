@@ -3178,8 +3178,9 @@ bool KernelBlitManager::runScheduler(uint64_t vqVM, hsa_queue_t* schedulerQueue,
     sp->eng_clk = (1000 * 1024) / dev().info().maxEngineClockFrequency_;
   }
 
-  if (!dev().info().pcie_atomics_) {
+  if (!dev().info().pcie_atomics_ || IS_WINDOWS) {
     // Use a device side global atomics to workaround the reliance of PCIe 3 atomics
+    // or on Windows where GPU-initiated PCIe atomics to host memory is not supported.
     sp->write_index = Hsa::queue_load_write_index_relaxed(schedulerQueue);
   } else {
     sp->write_index = static_cast<uint64_t>(-1ULL);
@@ -3203,7 +3204,7 @@ bool KernelBlitManager::runScheduler(uint64_t vqVM, hsa_queue_t* schedulerQueue,
   // Wait for the scheduler to finish all operations
   gpu().WaitCompleteSignal(sp->complete_signal);
 
-  if (!dev().info().pcie_atomics_) {
+  if (!dev().info().pcie_atomics_ || IS_WINDOWS) {
     // @note: A wait shouldn't be really necessary, but the queue write_index may not get a proper
     // value without the wait for all previous commands (see the PCIE3 atomics workaround above).
     // The scheduler can enqueue extra commands, but the real queue write index didn't have any

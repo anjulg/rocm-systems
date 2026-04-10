@@ -463,7 +463,13 @@ void* LoaderContext::SegmentAlloc(amdgpu_hsa_elf_segment_t segment,
   case AMDGPU_HSA_SEGMENT_CODE_AGENT: {
     switch (agent_profile) {
     case HSA_PROFILE_BASE:
+#if defined(_WIN32) || defined(_WIN64)
+      // On Windows, code objects at high GPU VAs can cause intermittent GPU page faults.
+      // Use identity-mapped system memory instead.
+      mem = new (std::nothrow) RegionMemory(RegionMemory::System(true), true);
+#else
       mem = new (std::nothrow) RegionMemory(RegionMemory::AgentLocal(agent, true), true);
+#endif
       break;
     case HSA_PROFILE_FULL:
       mem = new (std::nothrow) MappedMemory();
