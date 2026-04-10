@@ -108,31 +108,34 @@ class IpcOnImpl {
   }
 
   __device__ bool isIpcAvailable([[maybe_unused]] int my_pe, int target_pe, int *local_target_pe) {
-    // Fast path: use constmem (scalar loads, SGPR-cached)
-    // ipc_stride == 0 means pattern detection failed at init
-    if (constmem.ipc_stride != 0) {
-      int offset = target_pe - constmem.ipc_first_pe;
-      if (offset < 0) return false;
-      if (constmem.ipc_stride == 1) {
-        if (offset < constmem.ipc_shm_size) {
-          *local_target_pe = offset;
-          return true;
-        }
-      } else {
-        int idx = offset / constmem.ipc_stride;
-        if (idx < constmem.ipc_shm_size && offset == idx * constmem.ipc_stride) {
-          *local_target_pe = idx;
-          return true;
-        }
+    unsigned offset = static_cast<unsigned>(target_pe - constmem.ipc_first_pe);
+    int stride = constmem.ipc_stride;
+
+    if (stride == 1) {
+      // Consecutive PEs: branchless range check.
+      // Negative offsets wrap to large unsigned, failing the compare.
+      *local_target_pe = static_cast<int>(offset);
+      return offset < static_cast<unsigned>(constmem.ipc_shm_size);
+    }
+
+    if (stride > 1) {
+      // Strided PEs: integer division + multiply-back divisibility check.
+      int idx = static_cast<int>(offset) / stride;
+      if (static_cast<unsigned>(idx) < static_cast<unsigned>(constmem.ipc_shm_size) &&
+          offset == static_cast<unsigned>(idx * stride)) {
+        *local_target_pe = idx;
+        return true;
       }
       return false;
     }
-    // Fallback: linear scan (should not be reached in normal configurations)
-    if (nullptr == pes_with_ipc_avail) { return false; }
-    for (int i=0; i<shm_size; i++) {
-      if (pes_with_ipc_avail[i] == target_pe) {
-        *local_target_pe = i;
-        return true;
+
+    // General fallback (stride==0): linear scan for irregular patterns.
+    if (pes_with_ipc_avail != nullptr) {
+      for (int i = 0; i < shm_size; i++) {
+        if (pes_with_ipc_avail[i] == target_pe) {
+          *local_target_pe = i;
+          return true;
+        }
       }
     }
     return false;
