@@ -190,6 +190,10 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
       for (auto& [handle, mod] : state.module_map) {
         hipError_t err = hipModuleGetFunction(&func, mod,
                                               kl.kernel_name.c_str());
+        if (state.verbose)
+          fprintf(stderr, "[HRR]   module_map[0x%llx] mod=%p -> %s\n",
+                  (unsigned long long)handle, (void*)mod,
+                  (err == hipSuccess && func) ? "FOUND" : "miss");
         if (err == hipSuccess && func) break;
         func = nullptr;
       }
@@ -198,15 +202,28 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
         for (auto& [hex, mod] : state.co_modules) {
           hipError_t err = hipModuleGetFunction(&func, mod,
                                                 kl.kernel_name.c_str());
+          if (state.verbose)
+            fprintf(stderr, "[HRR]   co_modules[%s] mod=%p -> %s\n",
+                    hex.c_str(), (void*)mod,
+                    (err == hipSuccess && func) ? "FOUND" : "miss");
           if (err == hipSuccess && func) break;
           func = nullptr;
         }
       }
 
       if (!func) {
-        fprintf(stderr, "[HRR] Kernel '%s' not found in any loaded module\n",
-                kl.kernel_name.c_str());
+        fprintf(stderr, "[HRR] Kernel '%s' not found in any loaded module "
+                "(%zu module_map + %zu co_modules searched)\n",
+                kl.kernel_name.c_str(),
+                state.module_map.size(), state.co_modules.size());
         break;
+      }
+
+      if (kl.args.empty()) {
+        fprintf(stderr, "[HRR] WARNING: kernel '%s' has 0 recorded args — "
+                "trace was likely captured with truncated metadata "
+                "(rebuild proxy with larger name buffer and re-capture)\n",
+                kl.kernel_name.c_str());
       }
 
       // Build kernarg buffer from captured args
@@ -427,6 +444,41 @@ int main(int argc, char** argv) {
   hipDeviceProp_t props;
   HIP_CHECK(hipGetDeviceProperties(&props, 0));
   printf("[HRR] Replaying on: %s (%s)\n", props.name, props.gcnArchName);
+
+  // Pre-load all code objects from the archive directory.
+  // This ensures kernels are findable even if the trace lacks MODULE_LOAD
+  // events (e.g. fat-binary captures from older proxy versions).
+  for (const auto& [hex, co_path] : archive.code_objects) {
+    if (state.co_modules.count(hex)) continue;
+
+    FILE* co_f = fopen(co_path.c_str(), "rb");
+    if (!co_f) continue;
+    fseek(co_f, 0, SEEK_END);
+    long co_size = ftell(co_f);
+    fseek(co_f, 0, SEEK_SET);
+    if (co_size <= 0) { fclose(co_f); continue; }
+
+    std::vector<uint8_t> co_data(co_size);
+    size_t co_read = fread(co_data.data(), 1, co_size, co_f);
+    fclose(co_f);
+    if (co_read != static_cast<size_t>(co_size)) continue;
+
+    hipModule_t mod = nullptr;
+    hipError_t err = hipModuleLoadData(&mod, co_data.data());
+    if (err == hipSuccess && mod) {
+      state.co_modules[hex] = mod;
+      if (state.verbose)
+        fprintf(stderr, "[HRR] Pre-loaded code object %s (%ld bytes)\n",
+                hex.c_str(), co_size);
+    } else if (state.verbose) {
+      fprintf(stderr, "[HRR] Skipped code object %s (arch mismatch or load error)\n",
+              hex.c_str());
+    }
+  }
+
+  if (!archive.code_objects.empty())
+    printf("[HRR] Pre-loaded %zu / %zu code objects\n",
+           state.co_modules.size(), archive.code_objects.size());
 
   // Replay events
   auto wall_start = std::chrono::high_resolution_clock::now();

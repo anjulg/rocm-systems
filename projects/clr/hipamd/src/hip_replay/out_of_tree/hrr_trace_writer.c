@@ -86,9 +86,13 @@ static hash128_t hash_buffer(const void* data, size_t len) {
 
 #define MAX_ALLOCS 65536
 #define MAX_MODULES 256
-#define MAX_CO_KERNELS 512
-#define MAX_FUNC_ENTRIES 4096
-#define MAX_FUNC_NAME 256
+#define MAX_CO_KERNELS_INITIAL 1024
+/* Large enough to hold fat-binary registrations from all loaded HIP libraries
+ * (rocBLAS alone contributes ~40 K entries via __hipRegisterFunction) plus
+ * hipModuleGetFunction entries for runtime-loaded kernels (hipBLASLt). */
+#define MAX_FUNC_ENTRIES 65536
+/* Kernel names are stored as heap pointers (arbitrary length) so Tensile /
+ * hipBLASLt names of 300-500 characters are not truncated. */
 
 typedef struct {
   uintptr_t ptr;
@@ -103,15 +107,15 @@ typedef struct {
   size_t image_size;
   uint64_t image_hash_lo;  /* stored at load time so we don't need live image ptr later */
   uint64_t image_hash_hi;
-  /* Parsed kernel metadata for this module */
-  hrr_kernel_meta_t kernels[32];
+  /* Parsed kernel metadata for this module (dynamically allocated) */
+  hrr_kernel_meta_t* kernels;
   int num_kernels;
 } module_entry_t;
 
 typedef struct {
   uintptr_t handle;
   uint64_t module_handle;  /* handle of the owning hipModule_t (from g.next_mod_handle) */
-  char name[MAX_FUNC_NAME];
+  char* name;              /* heap-allocated; full length so Tensile names are not truncated */
 } func_entry_t;
 
 static struct {
@@ -231,11 +235,48 @@ static module_entry_t* find_module(uintptr_t mod) {
 
 /* ---- Public API ---- */
 
+/* Tracks whether g.mu has been initialized. Lives outside g so it survives
+ * the memset(&g, 0, ...) in hrr_writer_init(). */
+static int g_mu_initialized = 0;
+
+void hrr_early_init(void) {
+  if (!g_mu_initialized) {
+    HRR_MUTEX_INIT(&g.mu);
+    g_mu_initialized = 1;
+  }
+}
+
 int hrr_writer_init(void) {
+  /* Preserve function entries registered before this call via
+   * __hipRegisterFunction (fat-binary DLL global constructors fire before
+   * the first real HIP API call that triggers hrr_writer_init).
+   * func_entry_t.name is a heap pointer so memcpy copies the pointer value;
+   * the underlying strings survive the memset below and remain valid after
+   * the restore. */
+  int saved_num_funcs = g.num_funcs;
+  func_entry_t* saved_funcs = NULL;
+  if (saved_num_funcs > 0) {
+    saved_funcs = (func_entry_t*)malloc((size_t)saved_num_funcs * sizeof(func_entry_t));
+    if (saved_funcs)
+      memcpy(saved_funcs, g.funcs, (size_t)saved_num_funcs * sizeof(func_entry_t));
+    else
+      saved_num_funcs = 0;  /* allocation failed — lose early registrations rather than crash */
+  }
+
   memset(&g, 0, sizeof(g));
   g.next_handle = 1;
   g.next_mod_handle = 1;
+
+  /* (Re-)initialize the mutex — safe to call on a zeroed CRITICAL_SECTION. */
   HRR_MUTEX_INIT(&g.mu);
+  g_mu_initialized = 1;
+
+  /* Restore pre-registered kernel names. */
+  if (saved_num_funcs > 0 && saved_funcs) {
+    memcpy(g.funcs, saved_funcs, (size_t)saved_num_funcs * sizeof(func_entry_t));
+    g.num_funcs = saved_num_funcs;
+    free(saved_funcs);
+  }
 
   const char* env = getenv("HRR_RECORD");
   if (!env || strcmp(env, "1") != 0) return 0;
@@ -389,8 +430,21 @@ void hrr_record_module_load(void* module, const void* image, size_t image_size) 
     me->image_size = image_size;
     me->image_hash_lo = h.lo;
     me->image_hash_hi = h.hi;
-    me->num_kernels = hrr_parse_code_object(image, image_size,
-                                            me->kernels, 32);
+    me->kernels = (hrr_kernel_meta_t*)calloc(MAX_CO_KERNELS_INITIAL,
+                                              sizeof(hrr_kernel_meta_t));
+    me->num_kernels = me->kernels
+        ? hrr_parse_code_object(image, image_size,
+                                me->kernels, MAX_CO_KERNELS_INITIAL)
+        : 0;
+    if (g.verbose) {
+      fprintf(stderr, "[HRR] module_load: mod=%p handle=%llu image_size=%zu "
+              "parsed %d kernels\n",
+              module, (unsigned long long)mod_handle, image_size,
+              me->num_kernels);
+      for (int ki = 0; ki < me->num_kernels && ki < 3; ki++)
+        fprintf(stderr, "[HRR]   kernel[%d]: '%s' (%u args)\n",
+                ki, me->kernels[ki].name, me->kernels[ki].num_args);
+    }
   }
   HRR_MUTEX_UNLOCK(&g.mu);
 
@@ -418,7 +472,11 @@ void hrr_record_module_unload(void* module) {
   uint64_t handle = 0;
   HRR_MUTEX_LOCK(&g.mu);
   module_entry_t* me = find_module((uintptr_t)module);
-  if (me) { handle = me->handle; *me = g.modules[--g.num_modules]; }
+  if (me) {
+    handle = me->handle;
+    free(me->kernels);
+    *me = g.modules[--g.num_modules];
+  }
   HRR_MUTEX_UNLOCK(&g.mu);
   write_event(EVT_MODULE_UNLOAD, 0, &handle, sizeof(handle));
 }
@@ -456,6 +514,29 @@ void hrr_record_kernel_launch(const char* kernel_name,
   uint16_t name_len = (uint16_t)strlen(name);
   uint16_t num_args = meta ? (uint16_t)meta->num_args : 0;
   uint16_t num_snaps = 0;  /* TODO: buffer snapshots in out-of-tree */
+
+  if (!meta && kernel_name) {
+    int total_kernels = 0;
+    for (int mi = 0; mi < g.num_modules; mi++)
+      total_kernels += g.modules[mi].num_kernels;
+    fprintf(stderr, "[HRR] WARNING: no metadata for kernel '%s'\n"
+            "[HRR]   0 args recorded (replay will fail). "
+            "%d modules registered, %d kernels parsed total.\n"
+            "[HRR]   Set HRR_VERBOSE=1 and re-run to see per-module details.\n",
+            kernel_name, g.num_modules, total_kernels);
+    if (g.verbose) {
+      for (int mi = 0; mi < g.num_modules; mi++) {
+        fprintf(stderr, "[HRR]   module[%d]: handle=0x%llx %d kernels",
+                mi, (unsigned long long)g.modules[mi].handle,
+                g.modules[mi].num_kernels);
+        if (g.modules[mi].num_kernels > 0)
+          fprintf(stderr, " (first: '%.80s'%s)",
+                  g.modules[mi].kernels[0].name,
+                  strlen(g.modules[mi].kernels[0].name) > 80 ? "..." : "");
+        fprintf(stderr, "\n");
+      }
+    }
+  }
 
   /* co_hash (16 bytes) added to payload after name */
   size_t pl_size = 2 + name_len + 16 + 12 + 12 + 4 + 2 + 2;
@@ -569,6 +650,29 @@ void hrr_record_kernel_launch_packed(const char* kernel_name,
   uint16_t num_args = meta ? (uint16_t)meta->num_args : 0;
   uint16_t num_snaps = 0;
 
+  if (!meta && kernel_name) {
+    int total_kernels = 0;
+    for (int mi = 0; mi < g.num_modules; mi++)
+      total_kernels += g.modules[mi].num_kernels;
+    fprintf(stderr, "[HRR] WARNING: no metadata for kernel '%s'\n"
+            "[HRR]   0 args recorded (replay will fail). "
+            "%d modules registered, %d kernels parsed total.\n"
+            "[HRR]   Set HRR_VERBOSE=1 and re-run to see per-module details.\n",
+            kernel_name, g.num_modules, total_kernels);
+    if (g.verbose) {
+      for (int mi = 0; mi < g.num_modules; mi++) {
+        fprintf(stderr, "[HRR]   module[%d]: handle=0x%llx %d kernels",
+                mi, (unsigned long long)g.modules[mi].handle,
+                g.modules[mi].num_kernels);
+        if (g.modules[mi].num_kernels > 0)
+          fprintf(stderr, " (first: '%.80s'%s)",
+                  g.modules[mi].kernels[0].name,
+                  strlen(g.modules[mi].kernels[0].name) > 80 ? "..." : "");
+        fprintf(stderr, "\n");
+      }
+    }
+  }
+
   /* co_hash (16 bytes) added to payload after name */
   size_t pl_size = 2 + name_len + 16 + 12 + 12 + 4 + 2 + 2;
   for (uint32_t i = 0; i < num_args; i++) {
@@ -676,8 +780,12 @@ void hrr_register_function(const void* func_handle, const void* module_handle,
   uintptr_t h = (uintptr_t)func_handle;
   for (int i = 0; i < g.num_funcs; i++) {
     if (g.funcs[i].handle == h) {
-      strncpy(g.funcs[i].name, kernel_name, MAX_FUNC_NAME - 1);
-      g.funcs[i].name[MAX_FUNC_NAME - 1] = '\0';
+      free(g.funcs[i].name);
+#ifdef _WIN32
+      g.funcs[i].name = _strdup(kernel_name);
+#else
+      g.funcs[i].name = strdup(kernel_name);
+#endif
       g.funcs[i].module_handle = mod_h;
       HRR_MUTEX_UNLOCK(&g.mu);
       return;
@@ -686,8 +794,11 @@ void hrr_register_function(const void* func_handle, const void* module_handle,
   if (g.num_funcs < MAX_FUNC_ENTRIES) {
     g.funcs[g.num_funcs].handle = h;
     g.funcs[g.num_funcs].module_handle = mod_h;
-    strncpy(g.funcs[g.num_funcs].name, kernel_name, MAX_FUNC_NAME - 1);
-    g.funcs[g.num_funcs].name[MAX_FUNC_NAME - 1] = '\0';
+#ifdef _WIN32
+    g.funcs[g.num_funcs].name = _strdup(kernel_name);
+#else
+    g.funcs[g.num_funcs].name = strdup(kernel_name);
+#endif
     g.num_funcs++;
   }
   HRR_MUTEX_UNLOCK(&g.mu);

@@ -316,3 +316,7 @@ hrr-bench app old_capture.hrr --global-work-size --iterations 10
 
 New traces (recorded with the fixed interposer on this branch) do not need
 this flag.
+
+## For Windows: Proxy DLL
+1. Generate the defs : 
+python gen_proxy_exports.py .\amdhip64_7.dll amdhip64_7.def

@@ -30,7 +30,7 @@ typedef struct {
 
 /* Parsed kernel metadata */
 typedef struct {
-  char name[256];
+  char name[1024];           /* Tensile/hipBLASLt names can exceed 500 chars */
   uint32_t num_args;
   hrr_arg_desc_t args[64];  /* max 64 args per kernel */
 } hrr_kernel_meta_t;

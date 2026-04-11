@@ -12,6 +12,7 @@
 #include "hrr_code_object.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /* ---- ELF64 structures (minimal, avoiding elf.h dependency) ---- */
 
@@ -67,6 +68,14 @@ typedef struct {
 #define MP_NIL          0xc0
 #define MP_FALSE        0xc2
 #define MP_TRUE         0xc3
+#define MP_BIN8         0xc4
+#define MP_BIN16        0xc5
+#define MP_BIN32        0xc6
+#define MP_EXT8         0xc7
+#define MP_EXT16        0xc8
+#define MP_EXT32        0xc9
+#define MP_FLOAT32      0xca
+#define MP_FLOAT64      0xcb
 #define MP_UINT8        0xcc
 #define MP_UINT16       0xcd
 #define MP_UINT32       0xce
@@ -75,6 +84,11 @@ typedef struct {
 #define MP_INT16        0xd1
 #define MP_INT32        0xd2
 #define MP_INT64        0xd3
+#define MP_FIXEXT1      0xd4
+#define MP_FIXEXT2      0xd5
+#define MP_FIXEXT4      0xd6
+#define MP_FIXEXT8      0xd7
+#define MP_FIXEXT16     0xd8
 #define MP_STR8         0xd9
 #define MP_STR16        0xda
 #define MP_STR32        0xdb
@@ -125,7 +139,11 @@ static uint64_t mp_read_uint(mp_reader_t* r) {
   return 0;
 }
 
-/* Read a msgpack string into buf. Returns string length. */
+/* Read a msgpack string (or bin, treated as string) into buf.
+ * Returns string length, or -1 on type mismatch.
+ * IMPORTANT: on -1 return, the tag byte was consumed but the rest of the
+ * value was NOT.  The caller must back up (pos--) then call mp_skip(),
+ * or handle the stale position. */
 static int mp_read_str(mp_reader_t* r, char* buf, size_t buf_size) {
   if (mp_eof(r)) return -1;
   uint8_t tag = mp_read8(r);
@@ -133,13 +151,14 @@ static int mp_read_str(mp_reader_t* r, char* buf, size_t buf_size) {
 
   if (tag >= MP_FIXSTR_MIN && tag <= MP_FIXSTR_MAX) {
     len = tag & 0x1f;
-  } else if (tag == MP_STR8) {
+  } else if (tag == MP_STR8 || tag == MP_BIN8) {
     len = mp_read8(r);
-  } else if (tag == MP_STR16) {
+  } else if (tag == MP_STR16 || tag == MP_BIN16) {
     len = mp_read16(r);
-  } else if (tag == MP_STR32) {
+  } else if (tag == MP_STR32 || tag == MP_BIN32) {
     len = mp_read32(r);
   } else {
+    r->pos--;  /* put the tag back so caller can mp_skip the whole value */
     return -1;
   }
 
@@ -170,7 +189,8 @@ static int mp_read_array_size(mp_reader_t* r) {
   return -1;
 }
 
-/* Skip a msgpack value (recursive) */
+/* Skip a msgpack value (recursive).
+ * Must handle ALL msgpack types; missing a type desynchronizes the parser. */
 static void mp_skip(mp_reader_t* r) {
   if (mp_eof(r)) return;
   uint8_t tag = mp_peek(r);
@@ -201,13 +221,29 @@ static void mp_skip(mp_reader_t* r) {
   r->pos++;
   switch (tag) {
     case MP_NIL: case MP_FALSE: case MP_TRUE: break;
+    case MP_BIN8: case MP_STR8:
+      { uint8_t n = r->data[r->pos++]; r->pos += n; break; }
+    case MP_BIN16: case MP_STR16:
+      { uint16_t n = mp_read16(r); r->pos += n; break; }
+    case MP_BIN32: case MP_STR32:
+      { uint32_t n = mp_read32(r); r->pos += n; break; }
+    case MP_EXT8:
+      { uint8_t n = r->data[r->pos++]; r->pos += 1 + n; break; }
+    case MP_EXT16:
+      { uint16_t n = mp_read16(r); r->pos += 1 + n; break; }
+    case MP_EXT32:
+      { uint32_t n = mp_read32(r); r->pos += 1 + n; break; }
+    case MP_FLOAT32: case MP_UINT32: case MP_INT32:
+      r->pos += 4; break;
+    case MP_FLOAT64: case MP_UINT64: case MP_INT64:
+      r->pos += 8; break;
     case MP_UINT8: case MP_INT8: r->pos++; break;
     case MP_UINT16: case MP_INT16: r->pos += 2; break;
-    case MP_UINT32: case MP_INT32: r->pos += 4; break;
-    case MP_UINT64: case MP_INT64: r->pos += 8; break;
-    case MP_STR8: { uint8_t n = r->data[r->pos++]; r->pos += n; break; }
-    case MP_STR16: { uint16_t n = mp_read16(r); r->pos += n; break; }
-    case MP_STR32: { uint32_t n = mp_read32(r); r->pos += n; break; }
+    case MP_FIXEXT1: r->pos += 2; break;   /* 1 type + 1 data */
+    case MP_FIXEXT2: r->pos += 3; break;   /* 1 type + 2 data */
+    case MP_FIXEXT4: r->pos += 5; break;   /* 1 type + 4 data */
+    case MP_FIXEXT8: r->pos += 9; break;   /* 1 type + 8 data */
+    case MP_FIXEXT16: r->pos += 17; break; /* 1 type + 16 data */
     case MP_ARRAY16: { int n = mp_read16(r); for (int i=0;i<n;i++) mp_skip(r); break; }
     case MP_ARRAY32: { int n = (int)mp_read32(r); for (int i=0;i<n;i++) mp_skip(r); break; }
     case MP_MAP16: { int n = mp_read16(r); for (int i=0;i<n*2;i++) mp_skip(r); break; }
@@ -223,19 +259,27 @@ static int parse_kernel_args(mp_reader_t* r, hrr_kernel_meta_t* km) {
   if (nargs < 0) return -1;
 
   km->num_args = 0;
-  for (int i = 0; i < nargs && km->num_args < 64; i++) {
+  for (int i = 0; i < nargs; i++) {
     int map_size = mp_read_map_size(r);
     if (map_size < 0) return -1;
+
+    if (km->num_args >= 64) {
+      /* Storage full — still must consume this arg's map to keep stream in sync */
+      for (int j = 0; j < map_size; j++) { mp_skip(r); mp_skip(r); }
+      continue;
+    }
 
     hrr_arg_desc_t arg = {HRR_ARG_VALUE, 0, 0};
     char value_kind[64] = "";
 
     for (int j = 0; j < map_size; j++) {
       char key[64];
-      if (mp_read_str(r, key, sizeof(key)) < 0) { mp_skip(r); mp_skip(r); continue; }
+      if (mp_read_str(r, key, sizeof(key)) < 0) {
+        mp_skip(r); mp_skip(r); continue; /* skip non-string key + value */
+      }
 
       if (strcmp(key, ".value_kind") == 0) {
-        mp_read_str(r, value_kind, sizeof(value_kind));
+        if (mp_read_str(r, value_kind, sizeof(value_kind)) < 0) mp_skip(r);
       } else if (strcmp(key, ".size") == 0) {
         arg.size = (uint16_t)mp_read_uint(r);
       } else if (strcmp(key, ".offset") == 0) {
@@ -259,30 +303,73 @@ static int parse_kernel_args(mp_reader_t* r, hrr_kernel_meta_t* km) {
   return 0;
 }
 
+static int hrr_co_verbose(void) {
+  static int v = -1;
+  if (v < 0) { const char* e = getenv("HRR_VERBOSE"); v = (e && e[0] != '0'); }
+  return v;
+}
+
 static int parse_kernels_array(mp_reader_t* r, hrr_kernel_meta_t* kernels,
                                int max_kernels) {
   int nkernels = mp_read_array_size(r);
   if (nkernels < 0) return 0;
 
+  if (hrr_co_verbose())
+    fprintf(stderr, "[HRR]   metadata: amdhsa.kernels array has %d entries "
+            "(max_kernels=%d)\n", nkernels, max_kernels);
+
   int count = 0;
   for (int i = 0; i < nkernels && count < max_kernels; i++) {
+    if (mp_eof(r)) {
+      if (hrr_co_verbose())
+        fprintf(stderr, "[HRR]   parse stopped at kernel %d/%d: EOF\n",
+                i, nkernels);
+      break;
+    }
+
     int map_size = mp_read_map_size(r);
-    if (map_size < 0) break;
+    if (map_size < 0) {
+      if (hrr_co_verbose())
+        fprintf(stderr, "[HRR]   parse stopped at kernel %d/%d: "
+                "bad map tag 0x%02x at pos %zu/%zu\n",
+                i, nkernels,
+                r->pos < r->len ? r->data[r->pos] : 0xff,
+                r->pos, r->len);
+      break;
+    }
 
     hrr_kernel_meta_t* km = &kernels[count];
     memset(km, 0, sizeof(*km));
+    char symbol[1024] = "";
 
     for (int j = 0; j < map_size; j++) {
       char key[64];
-      if (mp_read_str(r, key, sizeof(key)) < 0) { mp_skip(r); mp_skip(r); continue; }
+      if (mp_read_str(r, key, sizeof(key)) < 0) {
+        mp_skip(r); mp_skip(r); continue; /* skip non-string key + value */
+      }
 
       if (strcmp(key, ".name") == 0) {
-        mp_read_str(r, km->name, sizeof(km->name));
+        if (mp_read_str(r, km->name, sizeof(km->name)) < 0) mp_skip(r);
+      } else if (strcmp(key, ".symbol") == 0) {
+        if (mp_read_str(r, symbol, sizeof(symbol)) < 0) mp_skip(r);
       } else if (strcmp(key, ".args") == 0) {
-        parse_kernel_args(r, km);
+        if (parse_kernel_args(r, km) < 0) {
+          if (hrr_co_verbose())
+            fprintf(stderr, "[HRR]   parse_kernel_args failed for kernel %d "
+                    "at pos %zu/%zu\n", i, r->pos, r->len);
+        }
       } else {
         mp_skip(r);
       }
+    }
+
+    /* Fallback: if .name is empty, derive from .symbol (strip ".kd" suffix) */
+    if (km->name[0] == '\0' && symbol[0] != '\0') {
+      size_t slen = strlen(symbol);
+      if (slen > 3 && strcmp(symbol + slen - 3, ".kd") == 0)
+        symbol[slen - 3] = '\0';
+      strncpy(km->name, symbol, sizeof(km->name) - 1);
+      km->name[sizeof(km->name) - 1] = '\0';
     }
 
     if (km->name[0] != '\0') count++;
@@ -300,7 +387,9 @@ static int parse_metadata(const uint8_t* data, size_t len,
 
   for (int i = 0; i < map_size; i++) {
     char key[64];
-    if (mp_read_str(&r, key, sizeof(key)) < 0) { mp_skip(&r); mp_skip(&r); continue; }
+    if (mp_read_str(&r, key, sizeof(key)) < 0) {
+      mp_skip(&r); mp_skip(&r); continue; /* skip non-string key + value */
+    }
 
     if (strcmp(key, "amdhsa.kernels") == 0) {
       return parse_kernels_array(&r, kernels, max_kernels);
@@ -321,9 +410,12 @@ int hrr_parse_code_object(const void* image, size_t image_size,
     return 0;
 
   const Elf64_Ehdr* ehdr = (const Elf64_Ehdr*)base;
+  int total = 0;
 
-  /* Iterate section headers looking for SHT_NOTE */
-  for (uint16_t i = 0; i < ehdr->e_shnum; i++) {
+  /* Iterate ALL section headers looking for SHT_NOTE.
+   * Tensile code objects contain multiple NT_AMDGPU_METADATA notes (one per
+   * linked kernel object file), so we must accumulate across all of them. */
+  for (uint16_t i = 0; i < ehdr->e_shnum && total < max_kernels; i++) {
     size_t sh_off = ehdr->e_shoff + (size_t)i * ehdr->e_shentsize;
     if (sh_off + sizeof(Elf64_Shdr) > image_size) break;
 
@@ -331,12 +423,12 @@ int hrr_parse_code_object(const void* image, size_t image_size,
     if (shdr->sh_type != SHT_NOTE) continue;
     if (shdr->sh_offset + shdr->sh_size > image_size) continue;
 
-    /* Iterate notes in this section */
+    /* Iterate ALL notes in this section */
     const uint8_t* note_data = base + shdr->sh_offset;
     size_t note_end = (size_t)shdr->sh_size;
     size_t pos = 0;
 
-    while (pos + sizeof(Elf64_Nhdr) <= note_end) {
+    while (pos + sizeof(Elf64_Nhdr) <= note_end && total < max_kernels) {
       const Elf64_Nhdr* nhdr = (const Elf64_Nhdr*)(note_data + pos);
       size_t name_off = pos + sizeof(Elf64_Nhdr);
       size_t name_padded = (nhdr->n_namesz + 3) & ~3u;
@@ -347,16 +439,16 @@ int hrr_parse_code_object(const void* image, size_t image_size,
 
       if (nhdr->n_type == NT_AMDGPU_METADATA && nhdr->n_namesz >= 6 &&
           memcmp(note_data + name_off, "AMDGPU", 6) == 0) {
-        /* Found metadata — parse msgpack */
-        return parse_metadata(note_data + desc_off, nhdr->n_descsz,
-                              kernels, max_kernels);
+        int n = parse_metadata(note_data + desc_off, nhdr->n_descsz,
+                               kernels + total, max_kernels - total);
+        total += n;
       }
 
       pos = desc_off + desc_padded;
     }
   }
 
-  return 0;
+  return total;
 }
 
 const hrr_kernel_meta_t* hrr_find_kernel(const hrr_kernel_meta_t* kernels,

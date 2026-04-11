@@ -27,12 +27,128 @@ endif()
 
 # --- Platform-specific recording library ---
 if(WIN32)
-  # Windows proxy DLL
   add_library(amdhip64_7 SHARED hrr_proxy_win.c)
   target_link_libraries(amdhip64_7 PRIVATE hrr_trace_writer hrr_code_object)
   set_target_properties(amdhip64_7 PROPERTIES
     OUTPUT_NAME "amdhip64_7"
     PREFIX "")
+
+  # ---------------------------------------------------------------------------
+  # .def file for full symbol forwarding — three ways to supply it:
+  #
+  #  A) Pre-generated (split build/deploy):
+  #       On the remote machine (where ROCm is installed):
+  #         python gen_proxy_exports.py C:\ROCm\bin\amdhip64_7.dll amdhip64_7.def
+  #       Copy amdhip64_7.def to the dev machine, then:
+  #         cmake -B build -S . -DHRR_DEF_FILE=C:\path\to\amdhip64_7.def
+  #
+  #  B) Generate locally (dev machine has a copy of the real DLL):
+  #         cmake -B build -S . -DHRR_REAL_HIP_DLL=C:\ROCm\bin\amdhip64_7.dll
+  #
+  #  C) Neither set → minimal mode: only the ~10 proxied symbols are exported.
+  #       Apps calling other HIP APIs will crash with STATUS_ENTRYPOINT_NOT_FOUND.
+  # ---------------------------------------------------------------------------
+  set(HRR_DEF_FILE "" CACHE FILEPATH
+      "Pre-generated amdhip64_7.def (use when building on a different machine from where ROCm is installed)")
+  set(HRR_REAL_HIP_DLL "" CACHE FILEPATH
+      "Path to the real amdhip64_7.dll — .def is auto-generated via gen_proxy_exports.py")
+
+  # Helper: given a proxy .def path, create a stub import lib for
+  # amdhip64_7_orig.dll and link the proxy against it.
+  # MSVC requires the import lib to emit PE forwarder entries; lib.exe can
+  # create one from the companion .def with no actual DLL on the build machine.
+  macro(_hrr_link_forwarder_def _def_file_path)
+    set(_orig_def  "${CMAKE_CURRENT_BINARY_DIR}/amdhip64_7_orig.def")
+    set(_orig_lib  "${CMAKE_CURRENT_BINARY_DIR}/amdhip64_7_orig.lib")
+
+    find_program(_LIB_EXE lib HINTS
+      "$ENV{VSINSTALLDIR}/VC/Tools/MSVC"
+      "$ENV{VCToolsInstallDir}/bin/Hostx64/x64"
+      "$ENV{ProgramFiles}/Microsoft Visual Studio"
+      PATH_SUFFIXES "bin/Hostx64/x64" "bin/HostX64/x64"
+    )
+    if(NOT _LIB_EXE)
+      # Fall back: lib.exe is usually on PATH inside a VS Developer Prompt
+      set(_LIB_EXE lib)
+    endif()
+
+    # lib.exe requires the companion amdhip64_7_orig.def next to the proxy def.
+    # gen_proxy_exports.py writes it there automatically.
+    if(NOT EXISTS "${_orig_def}")
+      message(FATAL_ERROR
+        "[HRR] ${_orig_def} not found.\n"
+        "      Re-run gen_proxy_exports.py — it now writes both .def files.")
+    endif()
+
+    # Each COMMAND item is a separate argument — CMake handles shell quoting
+    # automatically.  Do NOT embed extra quotes inside the argument strings or
+    # lib.exe will receive literal quote characters in the path.
+    execute_process(
+      COMMAND "${_LIB_EXE}" /nologo /machine:x64
+              "/def:${_orig_def}"
+              "/out:${_orig_lib}"
+      RESULT_VARIABLE _lib_result
+    )
+    if(NOT _lib_result EQUAL 0)
+      message(FATAL_ERROR "[HRR] lib.exe failed creating stub import lib (exit ${_lib_result})")
+    endif()
+
+    # Copy the macro argument into a plain variable before use — cmake_path and
+    # generator expressions cannot dereference macro formal parameters directly.
+    set(_proxy_def "${_def_file_path}")
+    target_link_options(amdhip64_7 PRIVATE "/DEF:${_proxy_def}")
+    target_link_libraries(amdhip64_7 PRIVATE "${_orig_lib}")
+  endmacro()
+
+  if(HRR_DEF_FILE)
+    if(NOT EXISTS "${HRR_DEF_FILE}")
+      message(FATAL_ERROR "[HRR] HRR_DEF_FILE does not exist: ${HRR_DEF_FILE}")
+    endif()
+    # Copy the pre-generated def (and its companion) into the build dir so
+    # _hrr_link_forwarder_def can find amdhip64_7_orig.def next to it.
+    get_filename_component(_def_dir "${HRR_DEF_FILE}" DIRECTORY)
+    set(_def_file "${CMAKE_CURRENT_BINARY_DIR}/amdhip64_7.def")
+    configure_file("${HRR_DEF_FILE}" "${_def_file}" COPYONLY)
+    configure_file("${_def_dir}/amdhip64_7_orig.def"
+                   "${CMAKE_CURRENT_BINARY_DIR}/amdhip64_7_orig.def" COPYONLY)
+    message(STATUS "[HRR] Using pre-generated .def: ${HRR_DEF_FILE}")
+    _hrr_link_forwarder_def("${_def_file}")
+
+  elseif(HRR_REAL_HIP_DLL)
+    if(NOT EXISTS "${HRR_REAL_HIP_DLL}")
+      message(FATAL_ERROR "[HRR] HRR_REAL_HIP_DLL does not exist: ${HRR_REAL_HIP_DLL}")
+    endif()
+
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(NOT Python3_FOUND)
+      message(FATAL_ERROR "[HRR] Python3 not found — needed to run gen_proxy_exports.py")
+    endif()
+
+    set(_def_file "${CMAKE_CURRENT_BINARY_DIR}/amdhip64_7.def")
+
+    execute_process(
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/gen_proxy_exports.py"
+              "${HRR_REAL_HIP_DLL}"
+              "${_def_file}"
+      RESULT_VARIABLE _def_result
+    )
+    if(NOT _def_result EQUAL 0)
+      message(FATAL_ERROR "[HRR] gen_proxy_exports.py failed (exit ${_def_result})")
+    endif()
+
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+      "${HRR_REAL_HIP_DLL}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/gen_proxy_exports.py"
+    )
+
+    message(STATUS "[HRR] Generated .def from ${HRR_REAL_HIP_DLL}")
+    _hrr_link_forwarder_def("${_def_file}")
+
+  else()
+    message(STATUS "[HRR] Proxy DLL in minimal mode — set HRR_DEF_FILE or HRR_REAL_HIP_DLL for full forwarding")
+  endif()
+
 else()
   # Linux LD_PRELOAD interposer
   # Include the C++ extension to intercept hipExtModuleLaunchKernel (MIGraphX path)

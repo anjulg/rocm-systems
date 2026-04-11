@@ -11,6 +11,12 @@
 extern "C" {
 #endif
 
+/* Initialize the mutex only — safe to call from DllMain / early DLL init,
+ * before HRR_* env vars are read.  Must be called before any
+ * hrr_register_function() calls (i.e. before DLL global constructors that
+ * invoke __hipRegisterFunction run).  Idempotent. */
+void hrr_early_init(void);
+
 /* Initialize the trace writer. Reads HRR_* env vars.
  * Returns 1 if recording is enabled, 0 otherwise. */
 int hrr_writer_init(void);

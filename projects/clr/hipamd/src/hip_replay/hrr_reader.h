@@ -54,7 +54,14 @@ struct MallocEvent {
 // NOTE: must be packed to match the trace writer's #pragma pack(1) layout.
 // Writer places hash_lo at byte offset 28 (no gap after kind); natural
 // alignment would insert 4 bytes of padding there.
-struct __attribute__((packed)) MemcpyEvent {
+#ifdef _MSC_VER
+#pragma pack(push, 1)
+#endif
+struct
+#ifdef __GNUC__
+  __attribute__((packed))
+#endif
+MemcpyEvent {
   uint64_t dst_addr;
   uint64_t src_addr;
   uint64_t size;
@@ -62,6 +69,9 @@ struct __attribute__((packed)) MemcpyEvent {
   uint64_t hash_lo;
   uint64_t hash_hi;
 };
+#ifdef _MSC_VER
+#pragma pack(pop)
+#endif
 
 // Parsed module load event
 struct ModuleLoadEvent {
