@@ -324,3 +324,10 @@ python gen_proxy_exports.py .\amdhip64_7.dll amdhip64_7.def
 Build:
 cmake -B build -S . -DCMAKE_PREFIX_PATH="E:\develop\hipdnn\dist\therock" -DHRR_DEF_FILE=".\amdhip64_7.def" -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build --config RelWithDebInfo
+
+Test:
+Set the env variables (powershell):
+$env:HRR_RECORD = "1"
+$env:HRR_OUTPUT = ".\capture.hrr"
+
+copy the generated proxy.dll (amdhip64_7.dll) and the real dll (renamed to amdhip64_7_orig.dll) in the same folder as app
