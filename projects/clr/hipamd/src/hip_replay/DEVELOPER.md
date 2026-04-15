@@ -318,5 +318,9 @@ New traces (recorded with the fixed interposer on this branch) do not need
 this flag.
 
 ## For Windows: Proxy DLL
-1. Generate the defs : 
+Generate the defs : 
 python gen_proxy_exports.py .\amdhip64_7.dll amdhip64_7.def
+
+Build:
+cmake -B build -S . -DCMAKE_PREFIX_PATH="E:\develop\hipdnn\dist\therock" -DHRR_DEF_FILE=".\amdhip64_7.def" -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build --config RelWithDebInfo
