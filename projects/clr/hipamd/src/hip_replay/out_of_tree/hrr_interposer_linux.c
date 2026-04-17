@@ -38,6 +38,7 @@ static hipError_t (*real_hipMemcpy)(void*, const void*, size_t, hipMemcpyKind) =
 static hipError_t (*real_hipMemcpyHtoD)(void*, const void*, size_t) = NULL;
 static hipError_t (*real_hipMemcpyDtoH)(void*, const void*, size_t) = NULL;
 static hipError_t (*real_hipMemset)(void*, int, size_t) = NULL;
+static hipError_t (*real_hipModuleLoad)(hipModule_t*, const char*) = NULL;
 static hipError_t (*real_hipModuleLoadData)(hipModule_t*, const void*) = NULL;
 static hipError_t (*real_hipModuleUnload)(hipModule_t) = NULL;
 static hipError_t (*real_hipModuleLaunchKernel)(hipFunction_t, unsigned, unsigned,
@@ -215,22 +216,83 @@ hipError_t hipMemset(void* dst, int value, size_t count) {
   FORWARD_OR_ERROR(hipMemset, (dst, value, count));
 }
 
+/* Compute the true byte extent of an ELF64 binary by walking section headers.
+ * The naive formula (e_shoff + e_shentsz * e_shnum) only covers the section
+ * header table; section data follows after it in AMDGPU code objects. */
+static size_t hrr_elf64_true_size(const unsigned char* p, size_t max_readable) {
+  if (max_readable < 64) return 0;
+  if (p[0] != 0x7f || p[1] != 'E' || p[2] != 'L' || p[3] != 'F') return 0;
+  if (p[4] != 2) return 0;  /* ELFCLASS64 only */
+
+  uint64_t e_shoff;
+  uint16_t e_shentsz, e_shnum;
+  memcpy(&e_shoff,  p + 40, 8);
+  memcpy(&e_shentsz, p + 58, 2);
+  memcpy(&e_shnum,   p + 60, 2);
+
+  if (e_shentsz < 64 || e_shnum == 0 || e_shoff == 0) return 0;
+
+  uint64_t end = e_shoff + (uint64_t)e_shentsz * e_shnum;
+
+  for (uint16_t i = 0; i < e_shnum; i++) {
+    uint64_t sh_base = e_shoff + (uint64_t)i * e_shentsz;
+    if (sh_base + 64 > (uint64_t)max_readable) break;
+    uint32_t sh_type;
+    uint64_t sh_offset, sh_size;
+    memcpy(&sh_type,   p + sh_base + 4,  4);
+    memcpy(&sh_offset, p + sh_base + 24, 8);
+    memcpy(&sh_size,   p + sh_base + 32, 8);
+    if (sh_type == 8 || sh_offset == 0 || sh_size == 0) continue;  /* SHT_NOBITS */
+    uint64_t section_end = sh_offset + sh_size;
+    if (section_end > end) end = section_end;
+  }
+
+  if (end > (uint64_t)max_readable) end = (uint64_t)max_readable;
+  return (size_t)end;
+}
+
+/* hipModuleLoad — load a code object from a file path.
+ * MIGraphX loads its MLIR-compiled kernels via this path (from the code object
+ * cache, typically ~/.cache/migraphx/).  Without intercepting this call those
+ * kernels are never captured and replay fails to find them. */
+hipError_t hipModuleLoad(hipModule_t* module, const char* fname) {
+  LOAD_SYM(hipModuleLoad);
+  if (!real_hipModuleLoad) return -1;
+  hipError_t ret = real_hipModuleLoad(module, fname);
+  if (ret == 0 && hrr_writer_enabled() && module && *module && fname) {
+    FILE* f = fopen(fname, "rb");
+    if (f) {
+      fseek(f, 0, SEEK_END);
+      long fsz = ftell(f);
+      rewind(f);
+      if (fsz > 0) {
+        void* buf = malloc((size_t)fsz);
+        if (buf && fread(buf, 1, (size_t)fsz, f) == (size_t)fsz) {
+          const unsigned char* p = (const unsigned char*)buf;
+          if (p[0] == 0x7f && p[1] == 'E' && p[2] == 'L' && p[3] == 'F') {
+            size_t sz = hrr_elf64_true_size(p, (size_t)fsz);
+            if (sz == 0) sz = (size_t)fsz;  /* fallback: use file size */
+            hrr_record_module_load(*module, buf, sz);
+          } else {
+            /* Non-ELF (COB/CCOB) — capture raw; writer will save as-is */
+            hrr_record_module_load(*module, buf, (size_t)fsz);
+          }
+        }
+        free(buf);
+      }
+      fclose(f);
+    }
+  }
+  return ret;
+}
+
 hipError_t hipModuleLoadData(hipModule_t* module, const void* image) {
   LOAD_SYM(hipModuleLoadData);
   if (!real_hipModuleLoadData) return -1;
   hipError_t ret = real_hipModuleLoadData(module, image);
   if (ret == 0 && hrr_writer_enabled() && module && *module && image) {
-    /* Estimate code object size from ELF */
-    size_t image_size = 0;
     const unsigned char* p = (const unsigned char*)image;
-    if (p[0] == 0x7f && p[1] == 'E' && p[2] == 'L' && p[3] == 'F') {
-      uint64_t e_shoff;
-      uint16_t e_shentsize, e_shnum;
-      memcpy(&e_shoff, p + 40, 8);
-      memcpy(&e_shentsize, p + 58, 2);
-      memcpy(&e_shnum, p + 60, 2);
-      image_size = (size_t)(e_shoff + (size_t)e_shentsize * e_shnum);
-    }
+    size_t image_size = hrr_elf64_true_size(p, (size_t)-1);
     if (image_size > 0) {
       hrr_record_module_load(*module, image, image_size);
     }

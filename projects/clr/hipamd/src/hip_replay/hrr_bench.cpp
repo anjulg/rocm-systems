@@ -148,7 +148,7 @@ static int setup_kernel(const hrr::Archive& archive, size_t kernel_idx,
     } else if (ev.header.event_type == hrr::EVENT_FREE) {
       auto it = ks.alloc_map.find(ev.malloc_ev.ptr_handle);
       if (it != ks.alloc_map.end()) {
-        hipFree(it->second);
+        (void)hipFree(it->second);
         ks.alloc_map.erase(it);
         ks.alloc_sizes.erase(ev.malloc_ev.ptr_handle);
       }
@@ -191,7 +191,7 @@ static int setup_kernel(const hrr::Archive& archive, size_t kernel_idx,
         ks.module = mod;
         break;
       }
-      hipModuleUnload(mod);
+      (void)hipModuleUnload(mod);
     }
   }
 
@@ -238,8 +238,8 @@ static void restore_inputs(const hrr::Archive& archive, KernelSetup& ks) {
 }
 
 static void cleanup_kernel(KernelSetup& ks) {
-  for (auto& [h, ptr] : ks.alloc_map) hipFree(ptr);
-  if (ks.module) hipModuleUnload(ks.module);
+  for (auto& [h, ptr] : ks.alloc_map) (void)hipFree(ptr);
+  if (ks.module) (void)hipModuleUnload(ks.module);
 }
 
 // --- Subcommands ---
@@ -418,7 +418,7 @@ static int cmd_repro(const hrr::Archive& archive, bool check_nan,
       case hrr::EVENT_FREE: {
         auto it = allocs.find(ev.malloc_ev.ptr_handle);
         if (it != allocs.end()) {
-          hipFree(it->second);
+          (void)hipFree(it->second);
           allocs.erase(it);
         }
         break;
@@ -637,8 +637,8 @@ static int cmd_repro(const hrr::Archive& archive, bool check_nan,
   }
 
   printf("Replay complete. No errors detected.\n");
-  for (auto& [h, p] : allocs) hipFree(p);
-  for (auto& [h, m] : modules) hipModuleUnload(m);
+  for (auto& [h, p] : allocs) (void)hipFree(p);
+  for (auto& [h, m] : modules) (void)hipModuleUnload(m);
   return 0;
 }
 
@@ -750,7 +750,7 @@ static int cmd_app(const hrr::Archive& archive, int iterations, int warmup,
                   "[HRR-WARN] MALLOC handle 0x%016llx already live — "
                   "VA reused after free (skipped free). Updating mapping.\n",
                   (unsigned long long)ev.malloc_ev.ptr_handle);
-          hipFree(allocs[ev.malloc_ev.ptr_handle]);
+          (void)hipFree(allocs[ev.malloc_ev.ptr_handle]);
         }
         if (hipMalloc(&ptr, alloc_size) == hipSuccess) {
           allocs[ev.malloc_ev.ptr_handle] = ptr;
@@ -1049,8 +1049,8 @@ static int cmd_app(const hrr::Archive& archive, int iterations, int warmup,
 
   if (iterations == 0) {
     printf("Warmup complete (0 timed iterations requested).\n");
-    for (auto& [h, p] : allocs) hipFree(p);
-    for (auto& [h, m] : modules) hipModuleUnload(m);
+    for (auto& [h, p] : allocs) (void)hipFree(p);
+    for (auto& [h, m] : modules) (void)hipModuleUnload(m);
     return 0;
   }
 
@@ -1074,8 +1074,8 @@ static int cmd_app(const hrr::Archive& archive, int iterations, int warmup,
   printf("Max:    %9.3f %s\n", fmt(times.back()), unit);
   printf("Throughput: %.1f infer/s\n", 1000.0f / mean);
 
-  for (auto& [h, p] : allocs) hipFree(p);
-  for (auto& [h, m] : modules) hipModuleUnload(m);
+  for (auto& [h, p] : allocs) (void)hipFree(p);
+  for (auto& [h, m] : modules) (void)hipModuleUnload(m);
   return 0;
 }
 

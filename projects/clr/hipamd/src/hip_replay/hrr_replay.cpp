@@ -123,7 +123,7 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
     case hrr::EVENT_FREE: {
       auto it = state.alloc_map.find(ev.malloc_ev.ptr_handle);
       if (it != state.alloc_map.end()) {
-        hipFree(it->second);
+        (void)hipFree(it->second);
         state.alloc_map.erase(it);
         state.alloc_sizes.erase(ev.malloc_ev.ptr_handle);
       }
@@ -609,10 +609,10 @@ int main(int argc, char** argv) {
 
   // Cleanup
   for (auto& [handle, ptr] : state.alloc_map) {
-    hipFree(ptr);
+    (void)hipFree(ptr);
   }
   for (auto& [hex, mod] : state.co_modules) {
-    hipModuleUnload(mod);
+    (void)hipModuleUnload(mod);
   }
 
   return state.verify_fail > 0 ? 1 : 0;
