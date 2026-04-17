@@ -87,6 +87,12 @@ HIP_RECORD=1 HIP_RECORD_OUTPUT=./capture.hrr ./my_hip_app
 - `inputs` — snapshot input buffers before each kernel launch (default)
 - `full` — snapshot inputs + outputs (syncs after every kernel, slowest)
 
+In `full` mode the writer synchronises the GPU after every kernel launch and
+reads back all pointer-arg buffers (D2H).  These are stored as blobs with
+direction=1 (output) snapshot records attached to the `KERNEL_LAUNCH` event.
+Use `hrr-replay --verify` to compare the saved output snapshots against the
+GPU results on the replay machine.
+
 ---
 
 ## Path B: Out-of-Tree Recording (pre-built ROCm)
@@ -127,6 +133,21 @@ HRR_RECORD=1 HRR_OUTPUT=./capture.hrr \
 | `HRR_KERNEL_FILTER=<glob>` | all | Record only matching kernels |
 | `HRR_MAX_BLOB_MB=<N>` | unlimited | Skip buffers above threshold |
 | `HRR_VERBOSE=1` | off | Print diagnostic messages to stderr |
+
+**Full mode** (`HRR_MODE=full`) captures output buffer state after each
+kernel launch.  It forces a `hipDeviceSynchronize` after every kernel and
+reads back each pointer-arg buffer, so recording is significantly slower.
+The resulting trace can be verified on a different machine:
+
+```bash
+# Record with full mode
+HRR_RECORD=1 HRR_MODE=full HRR_OUTPUT=./capture.hrr \
+  LD_PRELOAD=/path/to/libhrr_record.so \
+  ./my_hip_app
+
+# Replay and verify output matches
+hrr-replay capture.hrr --verify
+```
 
 ---
 
@@ -321,9 +342,17 @@ this flag.
 Generate the defs : 
 python gen_proxy_exports.py .\amdhip64_7.dll amdhip64_7.def
 
-Build:
-cmake -B build -S . -DCMAKE_PREFIX_PATH="E:\develop\hipdnn\dist\therock" -DHRR_DEF_FILE=".\amdhip64_7.def" -DCMAKE_BUILD_TYPE=RelWithDebInfo
+Build (Visual Studio 2022 x64):
+```
+cmake -B build -S . -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="E:\develop\hipdnn\dist\therock" -DHRR_DEF_FILE=".\amdhip64_7.def"
 cmake --build build --config RelWithDebInfo
+```
+
+Build (Ninja):
+```
+cmake -B build -S . -GNinja -DCMAKE_PREFIX_PATH="E:\develop\hipdnn\dist\therock" -DHRR_DEF_FILE=".\amdhip64_7.def" -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build
+```
 
 Test:
 Set the env variables (powershell):
@@ -331,3 +360,14 @@ $env:HRR_RECORD = "1"
 $env:HRR_OUTPUT = ".\capture.hrr"
 
 copy the generated proxy.dll (amdhip64_7.dll) and the real dll (renamed to amdhip64_7_orig.dll) in the same folder as app
+
+Full mode with output verification (powershell):
+```powershell
+$env:HRR_RECORD = "1"
+$env:HRR_MODE = "full"
+$env:HRR_OUTPUT = ".\capture.hrr"
+.\my_hip_app.exe
+
+# Verify outputs on same or different machine
+.\hrr-replay.exe .\capture.hrr --verify
+```

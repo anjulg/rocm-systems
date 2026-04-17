@@ -147,6 +147,28 @@ struct Archive {
   size_t code_object_count = 0;
 };
 
+// Per-kernel parameter override (loaded from run_params.json)
+struct KernelOverride {
+  bool     has_grid = false;
+  uint32_t grid[3] = {};
+  bool     has_block = false;
+  uint32_t block[3] = {};
+  bool     has_shared = false;
+  uint32_t shared_bytes = 0;
+  // Scalar arg index -> raw override bytes
+  std::unordered_map<uint16_t, std::vector<uint8_t>> scalar_args;
+};
+
+// Full run_params.json contents
+struct RunParams {
+  // event_index -> kernel launch overrides
+  std::unordered_map<size_t, KernelOverride> kernel_overrides;
+  // alloc handle -> new size (overrides hipMalloc size at replay)
+  std::unordered_map<uint64_t, uint64_t> alloc_overrides;
+  // event_index -> replacement data file path (overrides H2D memcpy blob)
+  std::unordered_map<size_t, std::string> data_overrides;
+};
+
 // Load an archive from disk. Returns false on error.
 bool load_archive(const std::string& path, Archive& archive);
 
@@ -163,5 +185,8 @@ std::string hash_hex(uint64_t lo, uint64_t hi);
 
 // Get human-readable event type name
 const char* event_type_name(uint16_t type);
+
+// Load run_params.json into a RunParams struct.
+bool load_run_params(const std::string& path, RunParams& out);
 
 }  // namespace hrr

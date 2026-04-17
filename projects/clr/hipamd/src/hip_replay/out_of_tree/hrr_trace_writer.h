@@ -91,6 +91,20 @@ const char* hrr_lookup_function_name(const void* func_handle);
 int hrr_lookup_function_co_hash(const void* func_handle,
                                  uint64_t* hash_lo, uint64_t* hash_hi);
 
+/* Device operation callbacks for full-mode output snapshot capture.
+ * In full mode (HRR_MODE=full), the writer calls these to synchronize the GPU
+ * and read back output buffers after each kernel launch.  Must point to the
+ * REAL HIP functions (not the proxy wrappers) to avoid re-entrancy.
+ *   sync_fn:   hipDeviceSynchronize()
+ *   memcpy_fn: hipMemcpy(dst, src, size, kind)  — called with kind=2 (D2H) */
+typedef int (*hrr_device_sync_fn)(void);
+typedef int (*hrr_memcpy_fn)(void* dst, const void* src, size_t size,
+                             unsigned int kind);
+void hrr_set_device_ops(hrr_device_sync_fn sync_fn, hrr_memcpy_fn memcpy_fn);
+
+/* Returns the current capture mode (0=timeline, 1=inputs, 2=full). */
+int hrr_capture_mode(void);
+
 #ifdef __cplusplus
 }
 #endif

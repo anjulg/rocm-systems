@@ -94,6 +94,12 @@ static void ensure_init(void) {
   hrr_writer_init();
   if (hrr_writer_enabled()) {
     atexit(hrr_writer_shutdown);
+    /* Provide real HIP device ops for full-mode output snapshot capture */
+    LOAD_SYM(hipDeviceSynchronize);
+    LOAD_SYM(hipMemcpy);
+    if (real_hipDeviceSynchronize && real_hipMemcpy)
+      hrr_set_device_ops((hrr_device_sync_fn)real_hipDeviceSynchronize,
+                         (hrr_memcpy_fn)real_hipMemcpy);
   }
 }
 
@@ -260,6 +266,12 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
     void** kernelParams, void** extra) {
   LOAD_SYM(hipModuleLaunchKernel);
 
+  /* Launch first so full-mode snapshot capture can sync + readback */
+  if (!real_hipModuleLaunchKernel) return -1;
+  int ret = real_hipModuleLaunchKernel(f, gridDimX, gridDimY, gridDimZ,
+      blockDimX, blockDimY, blockDimZ, sharedMemBytes, hStream,
+      kernelParams, extra);
+
   if (hrr_writer_enabled()) {
     const char* kname = hrr_lookup_function_name(f);
     uint64_t co_lo = 0, co_hi = 0;
@@ -270,10 +282,7 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
                              sharedMemBytes, hStream, kernelParams);
   }
 
-  if (!real_hipModuleLaunchKernel) return -1;
-  return real_hipModuleLaunchKernel(f, gridDimX, gridDimY, gridDimZ,
-      blockDimX, blockDimY, blockDimZ, sharedMemBytes, hStream,
-      kernelParams, extra);
+  return ret;
 }
 
 /* Note: hipLaunchKernel (<<<>>> / hipLaunchKernelGGL path) is intentionally

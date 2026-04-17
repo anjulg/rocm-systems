@@ -42,6 +42,10 @@ struct ReplayState {
   bool sync_after_launch = false;
   bool verbose = false;
   std::string kernel_filter;
+  std::string params_file;
+
+  // All overrides from run_params.json
+  hrr::RunParams run_params;
 
   size_t kernels_launched = 0;
   size_t verify_pass = 0;
@@ -98,10 +102,21 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
                         const hrr::Event& ev) {
   switch (ev.header.event_type) {
     case hrr::EVENT_MALLOC: {
+      uint64_t alloc_size = ev.malloc_ev.size;
+      auto ao_it = state.run_params.alloc_overrides.find(ev.malloc_ev.ptr_handle);
+      if (ao_it != state.run_params.alloc_overrides.end()) {
+        if (state.verbose)
+          fprintf(stderr, "[HRR] [params] Alloc override: handle=0x%llx "
+                  "size %llu -> %llu\n",
+                  (unsigned long long)ev.malloc_ev.ptr_handle,
+                  (unsigned long long)ev.malloc_ev.size,
+                  (unsigned long long)ao_it->second);
+        alloc_size = ao_it->second;
+      }
       void* ptr = nullptr;
-      HIP_CHECK(hipMalloc(&ptr, ev.malloc_ev.size));
+      HIP_CHECK(hipMalloc(&ptr, alloc_size));
       state.alloc_map[ev.malloc_ev.ptr_handle] = ptr;
-      state.alloc_sizes[ev.malloc_ev.ptr_handle] = ev.malloc_ev.size;
+      state.alloc_sizes[ev.malloc_ev.ptr_handle] = alloc_size;
       break;
     }
 
@@ -117,7 +132,33 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
 
     case hrr::EVENT_MEMCPY: {
       const auto& mc = ev.memcpy_ev;
-      if (mc.kind == 1 && mc.hash_lo != 0) {  // H2D with blob data
+      size_t seq = static_cast<size_t>(ev.header.sequence_id);
+      auto do_it = state.run_params.data_overrides.find(seq);
+
+      if (do_it != state.run_params.data_overrides.end()) {
+        FILE* df = fopen(do_it->second.c_str(), "rb");
+        if (!df) {
+          fprintf(stderr, "[HRR] [params] Cannot open data override file: %s\n",
+                  do_it->second.c_str());
+          break;
+        }
+        fseek(df, 0, SEEK_END);
+        long file_size = ftell(df);
+        fseek(df, 0, SEEK_SET);
+        std::vector<uint8_t> data(file_size);
+        fread(data.data(), 1, file_size, df);
+        fclose(df);
+
+        void* dst = translate_ptr(state, mc.dst_addr);
+        if (dst) {
+          HIP_CHECK(hipMemcpy(dst, data.data(), file_size,
+                              hipMemcpyHostToDevice));
+          if (state.verbose)
+            fprintf(stderr, "[HRR] [params] Data override: event %zu, "
+                    "loaded %ld bytes from %s\n",
+                    seq, file_size, do_it->second.c_str());
+        }
+      } else if (mc.kind == 1 && mc.hash_lo != 0) {  // H2D with blob data
         std::vector<uint8_t> blob;
         if (hrr::read_blob(archive, mc.hash_lo, mc.hash_hi, blob)) {
           void* dst = translate_ptr(state, mc.dst_addr);
@@ -170,6 +211,34 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
         if (kl.kernel_name.find(state.kernel_filter) == std::string::npos) {
           break;
         }
+      }
+
+      // Apply parameter overrides if present
+      uint32_t launch_grid[3]  = {kl.grid[0], kl.grid[1], kl.grid[2]};
+      uint32_t launch_block[3] = {kl.block[0], kl.block[1], kl.block[2]};
+      uint32_t launch_shared   = kl.shared_mem;
+      const hrr::KernelOverride* ovr = nullptr;
+
+      auto ovr_it = state.run_params.kernel_overrides.find(
+          static_cast<size_t>(ev.header.sequence_id));
+      if (ovr_it != state.run_params.kernel_overrides.end()) {
+        ovr = &ovr_it->second;
+        if (ovr->has_grid) {
+          launch_grid[0] = ovr->grid[0];
+          launch_grid[1] = ovr->grid[1];
+          launch_grid[2] = ovr->grid[2];
+        }
+        if (ovr->has_block) {
+          launch_block[0] = ovr->block[0];
+          launch_block[1] = ovr->block[1];
+          launch_block[2] = ovr->block[2];
+        }
+        if (ovr->has_shared)
+          launch_shared = ovr->shared_bytes;
+        if (state.verbose)
+          fprintf(stderr, "[HRR] [params] Override applied for kernel '%s' "
+                  "(event %llu)\n", kl.kernel_name.c_str(),
+                  (unsigned long long)ev.header.sequence_id);
       }
 
       // Restore input buffer snapshots
@@ -253,14 +322,23 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
           if (state.verbose) {
             fprintf(stderr, "  arg[%zu]: ptr handle=0x%llx -> %p%s\n",
                     arg_idx, (unsigned long long)handle, live_ptr,
-                    live_ptr ? "" : " (NULL - missing alloc!)");
+                    live_ptr ? "" : (handle == 0 ? " (NULL)" : " (NULL - missing alloc!)"));
           }
         } else {
-          // Scalar arg: use raw bytes
+          // Scalar arg: use raw bytes, apply override if present
           storage = arg.data;
+          if (ovr) {
+            auto sa_it = ovr->scalar_args.find(static_cast<uint16_t>(arg_idx));
+            if (sa_it != ovr->scalar_args.end() &&
+                sa_it->second.size() == storage.size()) {
+              storage = sa_it->second;
+              if (state.verbose)
+                fprintf(stderr, "  arg[%zu]: scalar OVERRIDDEN\n", arg_idx);
+            }
+          }
           if (state.verbose && arg.data.size() <= 8) {
             uint64_t val = 0;
-            memcpy(&val, arg.data.data(), std::min(arg.data.size(), sizeof(val)));
+            memcpy(&val, storage.data(), std::min(storage.size(), sizeof(val)));
             fprintf(stderr, "  arg[%zu]: scalar size=%u val=0x%llx\n",
                     arg_idx, arg.size, (unsigned long long)val);
           }
@@ -279,9 +357,9 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
 
       HIP_CHECK(hipModuleLaunchKernel(
           func,
-          kl.grid[0], kl.grid[1], kl.grid[2],
-          kl.block[0], kl.block[1], kl.block[2],
-          kl.shared_mem, nullptr,
+          launch_grid[0], launch_grid[1], launch_grid[2],
+          launch_block[0], launch_block[1], launch_block[2],
+          launch_shared, nullptr,
           arg_ptrs.data(), nullptr));
 
       if (state.timing) {
@@ -321,16 +399,17 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
               continue;
             }
 
-            std::vector<uint8_t> actual(snap.length);
-            hipMemcpy(actual.data(), src, snap.length,
+            size_t cmp_len = std::min((size_t)snap.length, expected.size());
+            std::vector<uint8_t> actual(cmp_len);
+            hipMemcpy(actual.data(), src, cmp_len,
                       hipMemcpyDeviceToHost);
 
-            if (memcmp(actual.data(), expected.data(), snap.length) == 0) {
+            if (cmp_len == expected.size() &&
+                memcmp(actual.data(), expected.data(), cmp_len) == 0) {
               state.verify_pass++;
             } else {
               state.verify_fail++;
-              // Find max absolute diff (treating as float32)
-              size_t num_f32 = snap.length / 4;
+              size_t num_f32 = cmp_len / 4;
               float max_diff = 0.0f;
               const float* a = reinterpret_cast<const float*>(actual.data());
               const float* e = reinterpret_cast<const float*>(expected.data());
@@ -378,6 +457,8 @@ static void print_usage(const char* argv0) {
     "  --verify            Compare output buffers with recorded snapshots\n"
     "  --timing            Report per-kernel GPU timing\n"
     "  --kernel-filter STR Only replay kernels containing STR in name\n"
+    "  --params FILE       Load run_params.json to override kernel grid/block/\n"
+    "                      shared_mem, scalar args, alloc sizes, and memcpy data\n"
     "  --skip-device-sync  Skip all device/stream sync calls (for debugging)\n"
     "  --sync-after-launch Sync after every kernel launch (shows GPU errors)\n"
     "  --verbose           Print each event as it is processed\n"
@@ -407,6 +488,8 @@ int main(int argc, char** argv) {
       state.verbose = true;
     } else if (strcmp(argv[i], "--kernel-filter") == 0 && i + 1 < argc) {
       state.kernel_filter = argv[++i];
+    } else if (strcmp(argv[i], "--params") == 0 && i + 1 < argc) {
+      state.params_file = argv[++i];
     } else if (strcmp(argv[i], "--help") == 0) {
       print_usage(argv[0]);
       return 0;
@@ -430,6 +513,15 @@ int main(int argc, char** argv) {
          "%zu code objects\n",
          archive.event_count, archive.kernel_count,
          archive.blob_count, archive.code_object_count);
+
+  // Load parameter overrides
+  if (!state.params_file.empty()) {
+    if (!hrr::load_run_params(state.params_file, state.run_params)) {
+      fprintf(stderr, "[HRR] Failed to load params from %s\n",
+              state.params_file.c_str());
+      return 1;
+    }
+  }
 
   // Init HIP
   HIP_CHECK(hipInit(0));

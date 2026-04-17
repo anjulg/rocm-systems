@@ -92,6 +92,9 @@ struct KernelSetup {
   std::unordered_map<uint64_t, size_t> alloc_sizes;
   std::vector<void*> arg_ptrs;
   std::vector<std::vector<uint8_t>> arg_storage;
+
+  struct MemsetOp { void* dst; int value; size_t size; };
+  std::vector<MemsetOp> memset_ops;
 };
 
 static void* translate_ptr(KernelSetup& ks, uint64_t handle) {
@@ -109,7 +112,8 @@ static void* translate_ptr(KernelSetup& ks, uint64_t handle) {
 
 // Set up a kernel for isolated execution: allocate buffers, restore inputs
 static int setup_kernel(const hrr::Archive& archive, size_t kernel_idx,
-                        KernelSetup& ks) {
+                        KernelSetup& ks,
+                        const hrr::RunParams& run_params = {}) {
   // Find the kernel_idx-th KERNEL_LAUNCH event
   size_t count = 0;
   for (size_t i = 0; i < archive.events.size(); i++) {
@@ -133,16 +137,34 @@ static int setup_kernel(const hrr::Archive& archive, size_t kernel_idx,
   for (size_t i = 0; i <= ks.event_index; i++) {
     const auto& ev = archive.events[i];
     if (ev.header.event_type == hrr::EVENT_MALLOC) {
+      uint64_t alloc_size = ev.malloc_ev.size;
+      auto ao_it = run_params.alloc_overrides.find(ev.malloc_ev.ptr_handle);
+      if (ao_it != run_params.alloc_overrides.end())
+        alloc_size = ao_it->second;
       void* ptr = nullptr;
-      HIP_CHECK(hipMalloc(&ptr, ev.malloc_ev.size));
+      HIP_CHECK(hipMalloc(&ptr, alloc_size));
       ks.alloc_map[ev.malloc_ev.ptr_handle] = ptr;
-      ks.alloc_sizes[ev.malloc_ev.ptr_handle] = ev.malloc_ev.size;
+      ks.alloc_sizes[ev.malloc_ev.ptr_handle] = alloc_size;
     } else if (ev.header.event_type == hrr::EVENT_FREE) {
       auto it = ks.alloc_map.find(ev.malloc_ev.ptr_handle);
       if (it != ks.alloc_map.end()) {
         hipFree(it->second);
         ks.alloc_map.erase(it);
         ks.alloc_sizes.erase(ev.malloc_ev.ptr_handle);
+      }
+    } else if (ev.header.event_type == hrr::EVENT_MEMSET) {
+      if (ev.raw_payload.size() >= 20) {
+        uint64_t dst_addr;
+        uint32_t value;
+        uint64_t size;
+        memcpy(&dst_addr, ev.raw_payload.data(), 8);
+        memcpy(&value, ev.raw_payload.data() + 8, 4);
+        memcpy(&size, ev.raw_payload.data() + 12, 8);
+        void* dst = translate_ptr(ks, dst_addr);
+        if (dst) {
+          hipMemset(dst, static_cast<int>(value), size);
+          ks.memset_ops.push_back({dst, static_cast<int>(value), size});
+        }
       }
     }
   }
@@ -248,30 +270,63 @@ static int cmd_list(const hrr::Archive& archive) {
 }
 
 static int cmd_kernel(const hrr::Archive& archive, size_t kernel_id,
-                      int iterations, int warmup) {
+                      int iterations, int warmup,
+                      const hrr::RunParams& run_params = {}) {
   KernelSetup ks;
-  int ret = setup_kernel(archive, kernel_id, ks);
+  int ret = setup_kernel(archive, kernel_id, ks, run_params);
   if (ret != 0) return ret;
 
   const auto& kl = *ks.kl;
+
+  // Apply overrides
+  uint32_t grid[3]  = {kl.grid[0], kl.grid[1], kl.grid[2]};
+  uint32_t block[3] = {kl.block[0], kl.block[1], kl.block[2]};
+  uint32_t shared   = kl.shared_mem;
+
+  size_t ovr_key = static_cast<size_t>(
+      archive.events[ks.event_index].header.sequence_id);
+  auto ovr_it = run_params.kernel_overrides.find(ovr_key);
+  if (ovr_it != run_params.kernel_overrides.end()) {
+    const auto& ovr = ovr_it->second;
+    if (ovr.has_grid)   { grid[0] = ovr.grid[0]; grid[1] = ovr.grid[1]; grid[2] = ovr.grid[2]; }
+    if (ovr.has_block)  { block[0] = ovr.block[0]; block[1] = ovr.block[1]; block[2] = ovr.block[2]; }
+    if (ovr.has_shared) shared = ovr.shared_bytes;
+    for (auto& [idx, bytes] : ovr.scalar_args) {
+      size_t si = 0;
+      for (size_t ai = 0; ai < kl.args.size(); ai++) {
+        if (kl.args[ai].value_kind == 2) continue;
+        if (ai == idx && kl.args[ai].value_kind == 0 &&
+            bytes.size() == ks.arg_storage[si].size()) {
+          ks.arg_storage[si] = bytes;
+          break;
+        }
+        si++;
+      }
+    }
+    fprintf(stderr, "[HRR] [params] Override applied for kernel '%s'\n",
+            kl.kernel_name.c_str());
+  }
+
   printf("Kernel: %s\n", kl.kernel_name.c_str());
   printf("Grid: [%u,%u,%u]  Block: [%u,%u,%u]  SharedMem: %u%s\n",
-         to_num_blocks(kl.grid[0], kl.block[0]),
-         to_num_blocks(kl.grid[1], kl.block[1]),
-         to_num_blocks(kl.grid[2], kl.block[2]),
-         kl.block[0], kl.block[1], kl.block[2], kl.shared_mem,
+         to_num_blocks(grid[0], block[0]),
+         to_num_blocks(grid[1], block[1]),
+         to_num_blocks(grid[2], block[2]),
+         block[0], block[1], block[2], shared,
          opt_global_work_size ? "  (grid converted from global work size)" : "");
   printf("Iterations: %d  Warmup: %d\n\n", iterations, warmup);
 
   // Warmup
   for (int i = 0; i < warmup; i++) {
     restore_inputs(archive, ks);
+    for (const auto& ms : ks.memset_ops)
+      hipMemset(ms.dst, ms.value, ms.size);
     hipError_t lerr = hipModuleLaunchKernel(ks.func,
-                          to_num_blocks(kl.grid[0], kl.block[0]),
-                          to_num_blocks(kl.grid[1], kl.block[1]),
-                          to_num_blocks(kl.grid[2], kl.block[2]),
-                          kl.block[0], kl.block[1], kl.block[2],
-                          kl.shared_mem, nullptr,
+                          to_num_blocks(grid[0], block[0]),
+                          to_num_blocks(grid[1], block[1]),
+                          to_num_blocks(grid[2], block[2]),
+                          block[0], block[1], block[2],
+                          shared, nullptr,
                           ks.arg_ptrs.data(), nullptr);
     hipError_t serr = hipDeviceSynchronize();
     if (lerr != hipSuccess || serr != hipSuccess) {
@@ -284,6 +339,8 @@ static int cmd_kernel(const hrr::Archive& archive, size_t kernel_id,
   std::vector<float> times(iterations);
   for (int i = 0; i < iterations; i++) {
     restore_inputs(archive, ks);
+    for (const auto& ms : ks.memset_ops)
+      hipMemset(ms.dst, ms.value, ms.size);
 
     hipEvent_t start, stop;
     hipEventCreate(&start);
@@ -291,11 +348,11 @@ static int cmd_kernel(const hrr::Archive& archive, size_t kernel_id,
     hipEventRecord(start);
 
     hipModuleLaunchKernel(ks.func,
-                          to_num_blocks(kl.grid[0], kl.block[0]),
-                          to_num_blocks(kl.grid[1], kl.block[1]),
-                          to_num_blocks(kl.grid[2], kl.block[2]),
-                          kl.block[0], kl.block[1], kl.block[2],
-                          kl.shared_mem, nullptr,
+                          to_num_blocks(grid[0], block[0]),
+                          to_num_blocks(grid[1], block[1]),
+                          to_num_blocks(grid[2], block[2]),
+                          block[0], block[1], block[2],
+                          shared, nullptr,
                           ks.arg_ptrs.data(), nullptr);
 
     hipEventRecord(stop);
@@ -325,7 +382,8 @@ static int cmd_kernel(const hrr::Archive& archive, size_t kernel_id,
   return 0;
 }
 
-static int cmd_repro(const hrr::Archive& archive, bool check_nan) {
+static int cmd_repro(const hrr::Archive& archive, bool check_nan,
+                     const hrr::RunParams& run_params = {}) {
   // Full replay looking for errors
   printf("Replaying %zu events...\n", archive.event_count);
 
@@ -340,16 +398,20 @@ static int cmd_repro(const hrr::Archive& archive, bool check_nan) {
 
     switch (ev.header.event_type) {
       case hrr::EVENT_MALLOC: {
+        uint64_t alloc_size = ev.malloc_ev.size;
+        auto ao_it = run_params.alloc_overrides.find(ev.malloc_ev.ptr_handle);
+        if (ao_it != run_params.alloc_overrides.end())
+          alloc_size = ao_it->second;
         void* ptr = nullptr;
-        hipError_t err = hipMalloc(&ptr, ev.malloc_ev.size);
+        hipError_t err = hipMalloc(&ptr, alloc_size);
         if (err != hipSuccess) {
           printf("Event %zu: MALLOC size=%llu -> %s\n",
-                 i, (unsigned long long)ev.malloc_ev.size,
+                 i, (unsigned long long)alloc_size,
                  hipGetErrorString(err));
           return 1;
         }
         allocs[ev.malloc_ev.ptr_handle] = ptr;
-        sizes[ev.malloc_ev.ptr_handle] = ev.malloc_ev.size;
+        sizes[ev.malloc_ev.ptr_handle] = alloc_size;
         break;
       }
 
@@ -363,14 +425,28 @@ static int cmd_repro(const hrr::Archive& archive, bool check_nan) {
       }
 
       case hrr::EVENT_MEMCPY: {
-        if (ev.memcpy_ev.kind == 1 && ev.memcpy_ev.hash_lo != 0) {
+        size_t seq = static_cast<size_t>(ev.header.sequence_id);
+        auto do_it = run_params.data_overrides.find(seq);
+        if (do_it != run_params.data_overrides.end()) {
+          FILE* df = fopen(do_it->second.c_str(), "rb");
+          if (df) {
+            fseek(df, 0, SEEK_END);
+            long file_sz = ftell(df);
+            fseek(df, 0, SEEK_SET);
+            std::vector<uint8_t> data(file_sz);
+            fread(data.data(), 1, file_sz, df);
+            fclose(df);
+            auto it = allocs.find(ev.memcpy_ev.dst_addr);
+            void* dst = it != allocs.end() ? it->second : nullptr;
+            if (dst)
+              hipMemcpy(dst, data.data(), file_sz, hipMemcpyHostToDevice);
+          }
+        } else if (ev.memcpy_ev.kind == 1 && ev.memcpy_ev.hash_lo != 0) {
           std::vector<uint8_t> blob;
           if (hrr::read_blob(archive, ev.memcpy_ev.hash_lo,
                              ev.memcpy_ev.hash_hi, blob)) {
             auto it = allocs.find(ev.memcpy_ev.dst_addr);
-            // Try direct lookup or range
-            void* dst = nullptr;
-            if (it != allocs.end()) dst = it->second;
+            void* dst = it != allocs.end() ? it->second : nullptr;
             if (dst) {
               hipMemcpy(dst, blob.data(), ev.memcpy_ev.size,
                         hipMemcpyHostToDevice);
@@ -380,9 +456,50 @@ static int cmd_repro(const hrr::Archive& archive, bool check_nan) {
         break;
       }
 
+      case hrr::EVENT_MEMSET: {
+        if (ev.raw_payload.size() >= 20) {
+          uint64_t dst_addr;
+          uint32_t value;
+          uint64_t size;
+          memcpy(&dst_addr, ev.raw_payload.data(), 8);
+          memcpy(&value, ev.raw_payload.data() + 8, 4);
+          memcpy(&size, ev.raw_payload.data() + 12, 8);
+          auto it = allocs.find(dst_addr);
+          void* dst = it != allocs.end() ? it->second : nullptr;
+          if (!dst) {
+            for (auto& [h, ptr] : allocs) {
+              auto sz = sizes.find(h);
+              if (sz != sizes.end() && dst_addr >= h &&
+                  dst_addr < h + sz->second) {
+                dst = static_cast<char*>(ptr) + (dst_addr - h);
+                break;
+              }
+            }
+          }
+          if (dst) hipMemset(dst, static_cast<int>(value), size);
+        }
+        break;
+      }
+
       case hrr::EVENT_KERNEL_LAUNCH: {
         if (!ev.kernel_launch) break;
         const auto& kl = *ev.kernel_launch;
+
+        // Apply overrides
+        uint32_t lgrid[3]  = {kl.grid[0], kl.grid[1], kl.grid[2]};
+        uint32_t lblk[3]   = {kl.block[0], kl.block[1], kl.block[2]};
+        uint32_t lshared    = kl.shared_mem;
+        const hrr::KernelOverride* ovr = nullptr;
+        {
+          auto oit = run_params.kernel_overrides.find(
+              static_cast<size_t>(ev.header.sequence_id));
+          if (oit != run_params.kernel_overrides.end()) {
+            ovr = &oit->second;
+            if (ovr->has_grid)   { lgrid[0] = ovr->grid[0]; lgrid[1] = ovr->grid[1]; lgrid[2] = ovr->grid[2]; }
+            if (ovr->has_block)  { lblk[0] = ovr->block[0]; lblk[1] = ovr->block[1]; lblk[2] = ovr->block[2]; }
+            if (ovr->has_shared) lshared = ovr->shared_bytes;
+          }
+        }
 
         // Find kernel
         hipFunction_t func = nullptr;
@@ -437,7 +554,8 @@ static int cmd_repro(const hrr::Archive& archive, bool check_nan) {
         // Build args
         std::vector<void*> arg_ptrs;
         std::vector<std::vector<uint8_t>> arg_store;
-        for (const auto& arg : kl.args) {
+        for (size_t ai = 0; ai < kl.args.size(); ai++) {
+          const auto& arg = kl.args[ai];
           if (arg.value_kind == 2) continue;
           arg_store.emplace_back();
           auto& s = arg_store.back();
@@ -450,17 +568,23 @@ static int cmd_repro(const hrr::Archive& archive, bool check_nan) {
             memcpy(s.data(), &p, sizeof(void*));
           } else {
             s = arg.data;
+            if (ovr) {
+              auto sa_it = ovr->scalar_args.find(static_cast<uint16_t>(ai));
+              if (sa_it != ovr->scalar_args.end() &&
+                  sa_it->second.size() == s.size())
+                s = sa_it->second;
+            }
           }
           arg_ptrs.push_back(s.data());
         }
 
         hipError_t err = hipModuleLaunchKernel(
             func,
-            to_num_blocks(kl.grid[0], kl.block[0]),
-            to_num_blocks(kl.grid[1], kl.block[1]),
-            to_num_blocks(kl.grid[2], kl.block[2]),
-            kl.block[0], kl.block[1], kl.block[2],
-            kl.shared_mem, nullptr, arg_ptrs.data(), nullptr);
+            to_num_blocks(lgrid[0], lblk[0]),
+            to_num_blocks(lgrid[1], lblk[1]),
+            to_num_blocks(lgrid[2], lblk[2]),
+            lblk[0], lblk[1], lblk[2],
+            lshared, nullptr, arg_ptrs.data(), nullptr);
 
         if (err != hipSuccess) {
           printf("Event %zu: KERNEL_LAUNCH '%s' -> %s\n",
@@ -518,7 +642,8 @@ static int cmd_repro(const hrr::Archive& archive, bool check_nan) {
   return 0;
 }
 
-static int cmd_app(const hrr::Archive& archive, int iterations, int warmup) {
+static int cmd_app(const hrr::Archive& archive, int iterations, int warmup,
+                   const hrr::RunParams& run_params = {}) {
   // One-shot setup: replay all MALLOC+MEMCPY events and load all code objects.
   // Build a flat list of pre-resolved kernel calls for repeated replay.
   // FREEs are intentionally skipped during setup so every kernel's input
@@ -537,6 +662,9 @@ static int cmd_app(const hrr::Archive& archive, int iterations, int warmup) {
     std::vector<void*> arg_ptrs;
   };
   std::vector<KernelCall> calls;
+
+  struct MemsetOp { void* dst; int value; size_t size; };
+  std::vector<MemsetOp> memset_ops;
 
   // Range-aware pointer translation (handles sub-allocations)
   auto find_ptr = [&](uint64_t handle) -> void* {
@@ -612,22 +740,21 @@ static int cmd_app(const hrr::Archive& archive, int iterations, int warmup) {
         break;
 
       case hrr::EVENT_MALLOC: {
+        uint64_t alloc_size = ev.malloc_ev.size;
+        auto ao_it = run_params.alloc_overrides.find(ev.malloc_ev.ptr_handle);
+        if (ao_it != run_params.alloc_overrides.end())
+          alloc_size = ao_it->second;
         void* ptr = nullptr;
         if (allocs.count(ev.malloc_ev.ptr_handle)) {
-          // Handle reuse: original allocator returned the same GPU VA after a
-          // free. In replay we didn't free, so the new hipMalloc gets a fresh
-          // VA. We must update allocs so future lookups use the new pointer —
-          // but kernels already set up with the old pointer will still use it.
-          // This is tracked but not corrected here; run 'diagnose' for detail.
           fprintf(stderr,
                   "[HRR-WARN] MALLOC handle 0x%016llx already live — "
                   "VA reused after free (skipped free). Updating mapping.\n",
                   (unsigned long long)ev.malloc_ev.ptr_handle);
-          hipFree(allocs[ev.malloc_ev.ptr_handle]);  // Free old replay buf
+          hipFree(allocs[ev.malloc_ev.ptr_handle]);
         }
-        if (hipMalloc(&ptr, ev.malloc_ev.size) == hipSuccess) {
+        if (hipMalloc(&ptr, alloc_size) == hipSuccess) {
           allocs[ev.malloc_ev.ptr_handle] = ptr;
-          alloc_sizes[ev.malloc_ev.ptr_handle] = ev.malloc_ev.size;
+          alloc_sizes[ev.malloc_ev.ptr_handle] = alloc_size;
         }
         break;
       }
@@ -638,26 +765,57 @@ static int cmd_app(const hrr::Archive& archive, int iterations, int warmup) {
         break;
 
       case hrr::EVENT_MEMCPY: {
-        // Restore any transfer that has a captured blob (kind 1=H2D, 3=D2D,
-        // 4=hipMemcpyDefault). Replay all as H2D: read blob → write to dst.
-        // D2H (kind=2) has no dst in GPU memory to restore.
-        bool want = ev.memcpy_ev.kind != 2 && ev.memcpy_ev.hash_lo != 0;
-        if (want) {
-          std::vector<uint8_t> blob;
-          bool has_blob = hrr::read_blob(archive, ev.memcpy_ev.hash_lo,
-                                         ev.memcpy_ev.hash_hi, blob);
-          void* dst = find_ptr(ev.memcpy_ev.dst_addr);
-          if (has_blob && dst) {
-            hipMemcpy(dst, blob.data(), ev.memcpy_ev.size,
-                      hipMemcpyHostToDevice);
-          } else if (!dst) {
-            fprintf(stderr,
-                    "[HRR-WARN] MEMCPY dst 0x%016llx (kind=%u, size=%llu) "
-                    "not found in %zu allocs — skipping\n",
-                    (unsigned long long)ev.memcpy_ev.dst_addr,
-                    ev.memcpy_ev.kind,
-                    (unsigned long long)ev.memcpy_ev.size,
-                    allocs.size());
+        size_t seq = static_cast<size_t>(ev.header.sequence_id);
+        auto do_it = run_params.data_overrides.find(seq);
+        if (do_it != run_params.data_overrides.end()) {
+          FILE* df = fopen(do_it->second.c_str(), "rb");
+          if (df) {
+            fseek(df, 0, SEEK_END);
+            long file_sz = ftell(df);
+            fseek(df, 0, SEEK_SET);
+            std::vector<uint8_t> data(file_sz);
+            fread(data.data(), 1, file_sz, df);
+            fclose(df);
+            void* dst = find_ptr(ev.memcpy_ev.dst_addr);
+            if (dst)
+              hipMemcpy(dst, data.data(), file_sz, hipMemcpyHostToDevice);
+          }
+        } else {
+          bool want = ev.memcpy_ev.kind != 2 && ev.memcpy_ev.hash_lo != 0;
+          if (want) {
+            std::vector<uint8_t> blob;
+            bool has_blob = hrr::read_blob(archive, ev.memcpy_ev.hash_lo,
+                                           ev.memcpy_ev.hash_hi, blob);
+            void* dst = find_ptr(ev.memcpy_ev.dst_addr);
+            if (has_blob && dst) {
+              hipMemcpy(dst, blob.data(), ev.memcpy_ev.size,
+                        hipMemcpyHostToDevice);
+            } else if (!dst) {
+              fprintf(stderr,
+                      "[HRR-WARN] MEMCPY dst 0x%016llx (kind=%u, size=%llu) "
+                      "not found in %zu allocs — skipping\n",
+                      (unsigned long long)ev.memcpy_ev.dst_addr,
+                      ev.memcpy_ev.kind,
+                      (unsigned long long)ev.memcpy_ev.size,
+                      allocs.size());
+            }
+          }
+        }
+        break;
+      }
+
+      case hrr::EVENT_MEMSET: {
+        if (ev.raw_payload.size() >= 20) {
+          uint64_t dst_addr;
+          uint32_t value;
+          uint64_t size;
+          memcpy(&dst_addr, ev.raw_payload.data(), 8);
+          memcpy(&value, ev.raw_payload.data() + 8, 4);
+          memcpy(&size, ev.raw_payload.data() + 12, 8);
+          void* dst = find_ptr(dst_addr);
+          if (dst) {
+            hipMemset(dst, static_cast<int>(value), size);
+            memset_ops.push_back({dst, static_cast<int>(value), size});
           }
         }
         break;
@@ -667,15 +825,32 @@ static int cmd_app(const hrr::Archive& archive, int iterations, int warmup) {
         if (!ev.kernel_launch) break;
         const auto& kl = *ev.kernel_launch;
 
+        // Apply overrides
+        const hrr::KernelOverride* kovr = nullptr;
+        auto oit = run_params.kernel_overrides.find(
+            static_cast<size_t>(ev.header.sequence_id));
+        if (oit != run_params.kernel_overrides.end()) kovr = &oit->second;
+
         KernelCall call;
         call.func = find_func(kl.kernel_name, kl.co_hash_lo, kl.co_hash_hi);
         call.name = kl.kernel_name;
-        memcpy(call.block, kl.block, sizeof(call.block));
-        for (int i = 0; i < 3; i++)
-          call.grid[i] = to_num_blocks(kl.grid[i], kl.block[i]);
-        call.shared_mem = kl.shared_mem;
 
-        for (const auto& arg : kl.args) {
+        if (kovr && kovr->has_block)
+          memcpy(call.block, kovr->block, sizeof(call.block));
+        else
+          memcpy(call.block, kl.block, sizeof(call.block));
+
+        uint32_t src_grid[3] = {kl.grid[0], kl.grid[1], kl.grid[2]};
+        if (kovr && kovr->has_grid)
+          memcpy(src_grid, kovr->grid, sizeof(src_grid));
+        for (int j = 0; j < 3; j++)
+          call.grid[j] = to_num_blocks(src_grid[j], call.block[j]);
+
+        call.shared_mem = (kovr && kovr->has_shared)
+                          ? kovr->shared_bytes : kl.shared_mem;
+
+        for (size_t ai = 0; ai < kl.args.size(); ai++) {
+          const auto& arg = kl.args[ai];
           if (arg.value_kind == 2) continue;  // hidden (runtime-managed)
           call.arg_store.emplace_back();
           auto& s = call.arg_store.back();
@@ -687,6 +862,12 @@ static int cmd_app(const hrr::Archive& archive, int iterations, int warmup) {
             memcpy(s.data(), &p, sizeof(void*));
           } else {
             s = arg.data;
+            if (kovr) {
+              auto sa_it = kovr->scalar_args.find(static_cast<uint16_t>(ai));
+              if (sa_it != kovr->scalar_args.end() &&
+                  sa_it->second.size() == s.size())
+                s = sa_it->second;
+            }
           }
           call.arg_ptrs.push_back(s.data());
         }
@@ -736,13 +917,54 @@ static int cmd_app(const hrr::Archive& archive, int iterations, int warmup) {
   printf("Kernels in trace: %zu", calls.size());
   if (missing) printf("  (%zu without resolved function)", missing);
   printf("\n");
-  printf("Iterations: %d  Warmup: %d\n\n", iterations, warmup);
+  printf("Iterations: %d  Warmup: %d  Memset ops: %zu\n\n",
+         iterations, warmup, memset_ops.size());
+
+  // Pre-flight: always validate the kernel can execute before timed iterations.
+  // Uses hipDeviceSynchronize (not hipStreamQuery) and no hipEvents to give
+  // the cleanest possible first launch.
+  {
+    fprintf(stderr, "[HRR] Pre-flight kernel validation...\n");
+    hipGetLastError();
+    hipDeviceSynchronize();  // drain any pending setup work
+    for (const auto& ms : memset_ops) {
+      hipError_t me = hipMemset(ms.dst, ms.value, ms.size);
+      if (me != hipSuccess) {
+        fprintf(stderr, "[HRR] Pre-flight memset failed: %d (%s)\n",
+                me, hipGetErrorString(me));
+      }
+    }
+    hipDeviceSynchronize();  // ensure memsets complete
+    for (size_t ki = 0; ki < calls.size(); ki++) {
+      auto& call = calls[ki];
+      if (!call.func) continue;
+      hipError_t err = hipModuleLaunchKernel(call.func,
+          call.grid[0], call.grid[1], call.grid[2],
+          call.block[0], call.block[1], call.block[2],
+          call.shared_mem, nullptr, call.arg_ptrs.data(), nullptr);
+      if (err != hipSuccess) {
+        fprintf(stderr, "[HRR] Pre-flight kernel %zu launch error: %d (%s)\n",
+                ki, err, hipGetErrorString(err));
+        hipDeviceReset();
+        return 1;
+      }
+    }
+    hipError_t pf = hipDeviceSynchronize();
+    if (pf != hipSuccess) {
+      fprintf(stderr, "[HRR] Pre-flight sync failed: %d (%s)\n",
+              pf, hipGetErrorString(pf));
+      hipDeviceReset();
+      return 1;
+    }
+    fprintf(stderr, "[HRR] Pre-flight OK\n");
+  }
 
   // Warmup — check for GPU errors and abort cleanly rather than hanging.
-  // On the FIRST warmup pass, sync after each kernel to identify which one
-  // causes a GPU fault (at the cost of per-kernel synchronization overhead).
-  hipGetLastError();  // clear any pre-existing error state
+  hipGetLastError();
   for (int w = 0; w < warmup; w++) {
+    for (const auto& ms : memset_ops) {
+      hipMemset(ms.dst, ms.value, ms.size);
+    }
     bool launch_failed = false;
     for (size_t ki = 0; ki < calls.size(); ki++) {
       auto& call = calls[ki];
@@ -757,7 +979,6 @@ static int cmd_app(const hrr::Archive& archive, int iterations, int warmup) {
         launch_failed = true;
         break;
       }
-      // Per-kernel sync on first warmup to pinpoint which kernel causes a GPU fault
       if (w == 0) {
         hipError_t s = safe_sync(5000);
         if (s != hipSuccess) {
@@ -784,9 +1005,13 @@ static int cmd_app(const hrr::Archive& archive, int iterations, int warmup) {
     }
   }
 
-  // Timed iterations — GPU-side fence-to-fence timing via hipEvent
+  // Timed iterations — GPU-side event timing with hipDeviceSynchronize
   std::vector<float> times(iterations);
   for (int it = 0; it < iterations; it++) {
+    for (const auto& ms : memset_ops) {
+      hipMemset(ms.dst, ms.value, ms.size);
+    }
+
     hipEvent_t t0, t1;
     hipEventCreate(&t0);
     hipEventCreate(&t1);
@@ -816,15 +1041,7 @@ static int cmd_app(const hrr::Archive& archive, int iterations, int warmup) {
     }
 
     hipEventRecord(t1);
-    hipError_t sync_err = safe_sync(10000);
-    if (sync_err != hipSuccess) {
-      fprintf(stderr, "[HRR] iter %d sync failed: %d (%s)\n",
-              it, sync_err, hipGetErrorString(sync_err));
-      hipEventDestroy(t0);
-      hipEventDestroy(t1);
-      hipDeviceReset();
-      return 1;
-    }
+    hipEventSynchronize(t1);
     hipEventElapsedTime(&times[it], t0, t1);
     hipEventDestroy(t0);
     hipEventDestroy(t1);
@@ -1204,6 +1421,121 @@ static int cmd_diagnose(const hrr::Archive& archive, int focus_kernels = 5) {
   return 0;
 }
 
+static int cmd_params_generate(const hrr::Archive& archive,
+                               const std::string& output_path) {
+  std::string path = output_path.empty() ? "run_params.json" : output_path;
+  FILE* f = fopen(path.c_str(), "w");
+  if (!f) {
+    fprintf(stderr, "[HRR] Cannot create %s\n", path.c_str());
+    return 1;
+  }
+
+  fprintf(f, "{\n  \"version\": 1,\n");
+
+  // --- alloc_overrides ---
+  fprintf(f, "  \"alloc_overrides\": [\n");
+  {
+    size_t alloc_count = 0;
+    for (const auto& ev : archive.events)
+      if (ev.header.event_type == hrr::EVENT_MALLOC) alloc_count++;
+
+    size_t ai = 0;
+    for (const auto& ev : archive.events) {
+      if (ev.header.event_type != hrr::EVENT_MALLOC) continue;
+      fprintf(f, "    { \"handle_hex\": \"%llx\", \"size\": %llu }%s\n",
+              (unsigned long long)ev.malloc_ev.ptr_handle,
+              (unsigned long long)ev.malloc_ev.size,
+              (++ai < alloc_count) ? "," : "");
+    }
+  }
+  fprintf(f, "  ],\n");
+
+  // --- data_overrides ---
+  fprintf(f, "  \"data_overrides\": [\n");
+  {
+    size_t memcpy_count = 0;
+    for (const auto& ev : archive.events)
+      if (ev.header.event_type == hrr::EVENT_MEMCPY &&
+          ev.memcpy_ev.kind == 1 && ev.memcpy_ev.hash_lo != 0)
+        memcpy_count++;
+
+    size_t mi = 0;
+    for (const auto& ev : archive.events) {
+      if (ev.header.event_type != hrr::EVENT_MEMCPY ||
+          ev.memcpy_ev.kind != 1 || ev.memcpy_ev.hash_lo == 0)
+        continue;
+      fprintf(f, "    { \"_comment\": \"H2D dst=0x%llx (%llu bytes)\", "
+              "\"event_index\": %llu, \"file\": \"\" }%s\n",
+              (unsigned long long)ev.memcpy_ev.dst_addr,
+              (unsigned long long)ev.memcpy_ev.size,
+              (unsigned long long)ev.header.sequence_id,
+              (++mi < memcpy_count) ? "," : "");
+    }
+  }
+  fprintf(f, "  ],\n");
+
+  // --- kernel_overrides ---
+  fprintf(f, "  \"kernel_overrides\": [\n");
+
+  size_t kid = 0;
+  size_t total_kernels = 0;
+  for (const auto& ev : archive.events)
+    if (ev.header.event_type == hrr::EVENT_KERNEL_LAUNCH && ev.kernel_launch)
+      total_kernels++;
+
+  for (size_t ei = 0; ei < archive.events.size(); ei++) {
+    const auto& ev = archive.events[ei];
+    if (ev.header.event_type != hrr::EVENT_KERNEL_LAUNCH || !ev.kernel_launch)
+      continue;
+    const auto& kl = *ev.kernel_launch;
+
+    std::string display_name = kl.kernel_name;
+    if (display_name.size() > 60)
+      display_name = display_name.substr(0, 57) + "...";
+
+    fprintf(f, "    {\n");
+    fprintf(f, "      \"_name\": \"%s (event_index=%llu)\",\n",
+            display_name.c_str(), (unsigned long long)ev.header.sequence_id);
+    fprintf(f, "      \"event_index\": %llu,\n",
+            (unsigned long long)ev.header.sequence_id);
+    fprintf(f, "      \"grid\": [%u, %u, %u],\n",
+            kl.grid[0], kl.grid[1], kl.grid[2]);
+    fprintf(f, "      \"block\": [%u, %u, %u],\n",
+            kl.block[0], kl.block[1], kl.block[2]);
+    fprintf(f, "      \"shared_bytes\": %u,\n", kl.shared_mem);
+
+    fprintf(f, "      \"scalar_args\": [\n");
+    bool first_scalar = true;
+    for (size_t ai = 0; ai < kl.args.size(); ai++) {
+      const auto& arg = kl.args[ai];
+      if (arg.value_kind != 0) continue;
+      if (!first_scalar) fprintf(f, ",\n");
+      first_scalar = false;
+      fprintf(f, "        { \"idx\": %zu, \"hex\": \"", ai);
+      for (size_t bi = 0; bi < arg.data.size(); bi++)
+        fprintf(f, "%02x", arg.data[bi]);
+      fprintf(f, "\" }");
+    }
+    if (!first_scalar) fprintf(f, "\n");
+    fprintf(f, "      ]\n");
+
+    kid++;
+    fprintf(f, "    }%s\n", (kid < total_kernels) ? "," : "");
+  }
+
+  fprintf(f, "  ]\n}\n");
+  fclose(f);
+
+  printf("[HRR] Generated %s with %zu alloc, %zu data, %zu kernel entries\n",
+         path.c_str(),
+         [&]() { size_t n = 0; for (auto& e : archive.events) if (e.header.event_type == hrr::EVENT_MALLOC) n++; return n; }(),
+         [&]() { size_t n = 0; for (auto& e : archive.events) if (e.header.event_type == hrr::EVENT_MEMCPY && e.memcpy_ev.kind == 1 && e.memcpy_ev.hash_lo != 0) n++; return n; }(),
+         total_kernels);
+  printf("[HRR] Edit the file, then pass --params %s to hrr-replay or "
+         "hrr-bench\n", path.c_str());
+  return 0;
+}
+
 static void print_usage(const char* argv0) {
   fprintf(stderr,
     "Usage: %s <subcommand> <capture.hrr> [options]\n\n"
@@ -1218,8 +1550,13 @@ static void print_usage(const char* argv0) {
     "  export --id N --output DIR Export kernel as standalone .hip\n"
     "    --safe                   Sanitize buffer data\n"
     "  stress --id N              Stress test a kernel\n"
-    "    --iterations N           Number of iterations (default: 1000)\n\n"
+    "    --iterations N           Number of iterations (default: 1000)\n"
+    "  params generate            Generate run_params.json template\n"
+    "    --output FILE            Output path (default: run_params.json)\n\n"
     "Common options:\n"
+    "  --params FILE              Load run_params.json to override kernel\n"
+    "                             grid/block/shared_mem, scalar args,\n"
+    "                             alloc sizes, and memcpy data\n"
     "  --global-work-size         Treat grid dims as global work size (total\n"
     "                             threads) instead of block count. Use this\n"
     "                             for traces recorded with the original\n"
@@ -1243,6 +1580,7 @@ int main(int argc, char** argv) {
   bool check_nan = false;
   bool safe_mode = false;
   std::string output_dir;
+  std::string params_file;
 
   for (int i = 3; i < argc; i++) {
     if (strcmp(argv[i], "--id") == 0 && i + 1 < argc) {
@@ -1257,8 +1595,39 @@ int main(int argc, char** argv) {
       safe_mode = true;
     } else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
       output_dir = argv[++i];
+    } else if (strcmp(argv[i], "--params") == 0 && i + 1 < argc) {
+      params_file = argv[++i];
     } else if (strcmp(argv[i], "--global-work-size") == 0) {
       opt_global_work_size = true;
+    }
+  }
+
+  // Handle "params generate" before archive loading since argv layout differs:
+  // hrr-bench params generate <archive.hrr> [--output file]
+  if (subcmd == "params") {
+    if (argc >= 4 && strcmp(argv[2], "generate") == 0) {
+      std::string gen_archive = argv[3];
+      std::string gen_output;
+      for (int i = 4; i < argc; i++) {
+        if (strcmp(argv[i], "--output") == 0 && i + 1 < argc)
+          gen_output = argv[++i];
+      }
+      hrr::Archive arch;
+      if (!hrr::load_archive(gen_archive, arch)) return 1;
+      return cmd_params_generate(arch, gen_output);
+    }
+    fprintf(stderr, "Usage: %s params generate <capture.hrr> [--output FILE]\n",
+            argv[0]);
+    return 1;
+  }
+
+  // Load parameter overrides if specified
+  hrr::RunParams run_params;
+  if (!params_file.empty()) {
+    if (!hrr::load_run_params(params_file, run_params)) {
+      fprintf(stderr, "[HRR] Failed to load params from %s\n",
+              params_file.c_str());
+      return 1;
     }
   }
 
@@ -1283,17 +1652,17 @@ int main(int argc, char** argv) {
   HIP_CHECK(hipInit(0));
 
   if (subcmd == "kernel") {
-    return cmd_kernel(archive, kernel_id, iterations, warmup);
+    return cmd_kernel(archive, kernel_id, iterations, warmup, run_params);
   } else if (subcmd == "repro") {
-    return cmd_repro(archive, check_nan);
+    return cmd_repro(archive, check_nan, run_params);
   } else if (subcmd == "export") {
     if (output_dir.empty()) output_dir = "repro_" + std::to_string(kernel_id);
     return cmd_export(archive, kernel_id, output_dir, safe_mode);
   } else if (subcmd == "stress") {
     return cmd_kernel(archive, kernel_id, iterations > 1000 ? iterations : 1000,
-                      warmup);
+                      warmup, run_params);
   } else if (subcmd == "app") {
-    return cmd_app(archive, iterations, warmup);
+    return cmd_app(archive, iterations, warmup, run_params);
   } else {
     fprintf(stderr, "Unknown subcommand: %s\n", subcmd.c_str());
     print_usage(argv[0]);

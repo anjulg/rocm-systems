@@ -315,6 +315,11 @@ static void ensure_hrr_init(void) {
   if (!g_hrr_initialized) {
     g_hrr_initialized = 1;
     hrr_writer_init();
+    /* Provide the real HIP device ops for full-mode output snapshot capture.
+     * These bypass the proxy so the snapshot readback doesn't get re-recorded. */
+    if (real_hipDeviceSynchronize && real_hipMemcpy)
+      hrr_set_device_ops(real_hipDeviceSynchronize,
+                         (hrr_memcpy_fn)real_hipMemcpy);
   }
 }
 
@@ -800,13 +805,19 @@ __declspec(dllexport) int __cdecl hipExtModuleLaunchKernel(
     unsigned int flags) {
   load_real_dll();
   ensure_hrr_init();
+  /* Launch first so full-mode snapshot capture can sync + readback */
+  if (!real_hipExtModuleLaunchKernel) return -1;
+  int ret = real_hipExtModuleLaunchKernel(f,
+      globalWorkSizeX, globalWorkSizeY, globalWorkSizeZ,
+      localWorkSizeX, localWorkSizeY, localWorkSizeZ,
+      sharedMemBytes, hStream,
+      kernelParams, extra, startEvent, stopEvent, flags);
   if (hrr_writer_enabled()) {
     char sym_buf[256];
     const char* kname = hrr_kernel_name(f, sym_buf, sizeof(sym_buf));
     uint64_t co_lo = 0, co_hi = 0;
     hrr_lookup_function_co_hash(f, &co_lo, &co_hi);
 
-    /* Convert globalWorkSize → numBlocks (ceiling division) */
     unsigned int nbx = localWorkSizeX ? (globalWorkSizeX + localWorkSizeX - 1) / localWorkSizeX : 1;
     unsigned int nby = localWorkSizeY ? (globalWorkSizeY + localWorkSizeY - 1) / localWorkSizeY : 1;
     unsigned int nbz = localWorkSizeZ ? (globalWorkSizeZ + localWorkSizeZ - 1) / localWorkSizeZ : 1;
@@ -817,9 +828,6 @@ __declspec(dllexport) int __cdecl hipExtModuleLaunchKernel(
                                localWorkSizeX, localWorkSizeY, localWorkSizeZ,
                                (uint32_t)sharedMemBytes, hStream, kernelParams);
     } else if (extra) {
-      /* Packed kernarg buffer: extra = { HIP_LAUNCH_PARAM_BUFFER_POINTER, buf,
-       *                                  HIP_LAUNCH_PARAM_BUFFER_SIZE, &size,
-       *                                  HIP_LAUNCH_PARAM_END } */
       const void* packed_buf = NULL;
       size_t packed_size = 0;
       int ei;
@@ -841,12 +849,7 @@ __declspec(dllexport) int __cdecl hipExtModuleLaunchKernel(
       }
     }
   }
-  if (!real_hipExtModuleLaunchKernel) return -1;
-  return real_hipExtModuleLaunchKernel(f,
-      globalWorkSizeX, globalWorkSizeY, globalWorkSizeZ,
-      localWorkSizeX, localWorkSizeY, localWorkSizeZ,
-      sharedMemBytes, hStream,
-      kernelParams, extra, startEvent, stopEvent, flags);
+  return ret;
 }
 
 __declspec(dllexport) int __cdecl hipModuleLaunchKernel(
@@ -855,6 +858,9 @@ __declspec(dllexport) int __cdecl hipModuleLaunchKernel(
     unsigned shared, void* stream, void** params, void** extra) {
   load_real_dll();
   ensure_hrr_init();
+  /* Launch first so that full-mode snapshot capture can sync + readback */
+  int ret = real_hipModuleLaunchKernel(f, gx, gy, gz, bx, by, bz,
+                                       shared, stream, params, extra);
   if (hrr_writer_enabled()) {
     char sym_buf[256];
     const char* kname = hrr_kernel_name(f, sym_buf, sizeof(sym_buf));
@@ -864,8 +870,7 @@ __declspec(dllexport) int __cdecl hipModuleLaunchKernel(
                              gx, gy, gz, bx, by, bz,
                              shared, stream, params);
   }
-  return real_hipModuleLaunchKernel(f, gx, gy, gz, bx, by, bz,
-                                    shared, stream, params, extra);
+  return ret;
 }
 
 /* ---- Fat binary code object extraction ----
@@ -991,6 +996,9 @@ __declspec(dllexport) int __cdecl hipLaunchKernel(
     void** args, size_t sharedMemBytes, void* stream) {
   load_real_dll();
   ensure_hrr_init();
+  if (!real_hipLaunchKernel) return -1;
+  int ret = real_hipLaunchKernel(function_address, numBlocks, dimBlocks,
+                                 args, sharedMemBytes, stream);
   if (hrr_writer_enabled()) {
     char sym_buf[256];
     const char* kname = hrr_kernel_name(function_address, sym_buf, sizeof(sym_buf));
@@ -1001,9 +1009,7 @@ __declspec(dllexport) int __cdecl hipLaunchKernel(
                              dimBlocks.x, dimBlocks.y, dimBlocks.z,
                              (uint32_t)sharedMemBytes, stream, args);
   }
-  if (!real_hipLaunchKernel) return -1;
-  return real_hipLaunchKernel(function_address, numBlocks, dimBlocks,
-                              args, sharedMemBytes, stream);
+  return ret;
 }
 
 __declspec(dllexport) int __cdecl hipDeviceSynchronize(void) {

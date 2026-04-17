@@ -262,4 +262,266 @@ bool read_code_object(const Archive& archive, uint64_t hash_lo, uint64_t hash_hi
   return read == static_cast<size_t>(size);
 }
 
+// --- Minimal JSON parser for run_params.json ---
+
+namespace {
+
+struct JParser {
+  const char* p;
+  const char* end;
+
+  void skip_ws() {
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
+      p++;
+  }
+
+  bool expect(char c) {
+    skip_ws();
+    if (p < end && *p == c) { p++; return true; }
+    return false;
+  }
+
+  bool peek(char c) {
+    skip_ws();
+    return p < end && *p == c;
+  }
+
+  bool parse_string(std::string& out) {
+    skip_ws();
+    if (p >= end || *p != '"') return false;
+    p++;
+    out.clear();
+    while (p < end && *p != '"') {
+      if (*p == '\\' && p + 1 < end) { p++; }
+      out += *p++;
+    }
+    if (p < end) p++;
+    return true;
+  }
+
+  bool parse_int64(int64_t& out) {
+    skip_ws();
+    char* ep;
+    out = strtoll(p, &ep, 10);
+    if (ep == p) return false;
+    p = ep;
+    return true;
+  }
+
+  bool parse_uint32(uint32_t& out) {
+    int64_t v;
+    if (!parse_int64(v)) return false;
+    out = static_cast<uint32_t>(v);
+    return true;
+  }
+
+  bool skip_value() {
+    skip_ws();
+    if (p >= end) return false;
+    if (*p == '"') { std::string s; return parse_string(s); }
+    if (*p == '{') return skip_object();
+    if (*p == '[') return skip_array();
+    while (p < end && *p != ',' && *p != '}' && *p != ']'
+           && *p != ' ' && *p != '\n' && *p != '\r' && *p != '\t')
+      p++;
+    return true;
+  }
+
+  bool skip_object() {
+    if (!expect('{')) return false;
+    if (peek('}')) { p++; return true; }
+    do {
+      std::string k; if (!parse_string(k)) return false;
+      if (!expect(':')) return false;
+      if (!skip_value()) return false;
+    } while (expect(','));
+    return expect('}');
+  }
+
+  bool skip_array() {
+    if (!expect('[')) return false;
+    if (peek(']')) { p++; return true; }
+    do { if (!skip_value()) return false; } while (expect(','));
+    return expect(']');
+  }
+
+  bool parse_uint32_array3(uint32_t out[3]) {
+    if (!expect('[')) return false;
+    if (!parse_uint32(out[0])) return false;
+    expect(','); if (!parse_uint32(out[1])) return false;
+    expect(','); if (!parse_uint32(out[2])) return false;
+    return expect(']');
+  }
+};
+
+static std::vector<uint8_t> hex_to_bytes(const std::string& hex) {
+  std::vector<uint8_t> bytes;
+  for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+    uint8_t b = static_cast<uint8_t>(
+        strtoul(hex.substr(i, 2).c_str(), nullptr, 16));
+    bytes.push_back(b);
+  }
+  return bytes;
+}
+
+}  // anonymous namespace
+
+bool load_run_params(const std::string& path, RunParams& out) {
+  FILE* f = fopen(path.c_str(), "rb");
+  if (!f) {
+    fprintf(stderr, "[HRR] Cannot open params file: %s\n", path.c_str());
+    return false;
+  }
+  fseek(f, 0, SEEK_END);
+  long sz = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  std::string json(sz, '\0');
+  fread(&json[0], 1, sz, f);
+  fclose(f);
+
+  JParser jp{json.data(), json.data() + json.size()};
+
+  if (!jp.expect('{')) return false;
+
+  while (!jp.peek('}')) {
+    std::string key;
+    if (!jp.parse_string(key)) return false;
+    if (!jp.expect(':')) return false;
+
+    if (key == "kernel_overrides") {
+      if (!jp.expect('[')) return false;
+      while (!jp.peek(']')) {
+        KernelOverride ovr;
+        size_t event_index = 0;
+        bool has_event_index = false;
+
+        if (!jp.expect('{')) return false;
+        while (!jp.peek('}')) {
+          std::string k;
+          if (!jp.parse_string(k)) return false;
+          if (!jp.expect(':')) return false;
+
+          if (k == "event_index") {
+            int64_t v; jp.parse_int64(v);
+            event_index = static_cast<size_t>(v);
+            has_event_index = true;
+          } else if (k == "grid") {
+            ovr.has_grid = true;
+            jp.parse_uint32_array3(ovr.grid);
+          } else if (k == "block") {
+            ovr.has_block = true;
+            jp.parse_uint32_array3(ovr.block);
+          } else if (k == "shared_bytes") {
+            ovr.has_shared = true;
+            jp.parse_uint32(ovr.shared_bytes);
+          } else if (k == "scalar_args") {
+            if (!jp.expect('[')) return false;
+            while (!jp.peek(']')) {
+              if (!jp.expect('{')) return false;
+              uint16_t idx = 0;
+              std::string hex;
+              while (!jp.peek('}')) {
+                std::string ak;
+                jp.parse_string(ak); jp.expect(':');
+                if (ak == "idx") {
+                  int64_t v; jp.parse_int64(v);
+                  idx = static_cast<uint16_t>(v);
+                } else if (ak == "hex") {
+                  jp.parse_string(hex);
+                } else {
+                  jp.skip_value();
+                }
+                jp.expect(',');
+              }
+              jp.expect('}');
+              if (!hex.empty())
+                ovr.scalar_args[idx] = hex_to_bytes(hex);
+              jp.expect(',');
+            }
+            jp.expect(']');
+          } else {
+            jp.skip_value();
+          }
+          jp.expect(',');
+        }
+        jp.expect('}');
+
+        if (has_event_index)
+          out.kernel_overrides[event_index] = std::move(ovr);
+        jp.expect(',');
+      }
+      jp.expect(']');
+
+    } else if (key == "alloc_overrides") {
+      if (!jp.expect('[')) return false;
+      while (!jp.peek(']')) {
+        if (!jp.expect('{')) return false;
+        std::string handle_hex;
+        uint64_t new_size = 0;
+        bool has_size = false;
+        while (!jp.peek('}')) {
+          std::string k;
+          jp.parse_string(k); jp.expect(':');
+          if (k == "handle_hex") {
+            jp.parse_string(handle_hex);
+          } else if (k == "size") {
+            int64_t v; jp.parse_int64(v);
+            new_size = static_cast<uint64_t>(v);
+            has_size = true;
+          } else {
+            jp.skip_value();
+          }
+          jp.expect(',');
+        }
+        jp.expect('}');
+        if (!handle_hex.empty() && has_size) {
+          uint64_t handle = strtoull(handle_hex.c_str(), nullptr, 16);
+          out.alloc_overrides[handle] = new_size;
+        }
+        jp.expect(',');
+      }
+      jp.expect(']');
+
+    } else if (key == "data_overrides") {
+      if (!jp.expect('[')) return false;
+      while (!jp.peek(']')) {
+        if (!jp.expect('{')) return false;
+        size_t event_index = 0;
+        bool has_ei = false;
+        std::string file_path;
+        while (!jp.peek('}')) {
+          std::string k;
+          jp.parse_string(k); jp.expect(':');
+          if (k == "event_index") {
+            int64_t v; jp.parse_int64(v);
+            event_index = static_cast<size_t>(v);
+            has_ei = true;
+          } else if (k == "file") {
+            jp.parse_string(file_path);
+          } else {
+            jp.skip_value();
+          }
+          jp.expect(',');
+        }
+        jp.expect('}');
+        if (has_ei && !file_path.empty())
+          out.data_overrides[event_index] = file_path;
+        jp.expect(',');
+      }
+      jp.expect(']');
+
+    } else {
+      jp.skip_value();
+    }
+    jp.expect(',');
+  }
+  jp.expect('}');
+
+  fprintf(stderr, "[HRR] Loaded params: %zu kernel overrides, "
+          "%zu alloc overrides, %zu data overrides from %s\n",
+          out.kernel_overrides.size(), out.alloc_overrides.size(),
+          out.data_overrides.size(), path.c_str());
+  return true;
+}
+
 }  // namespace hrr
