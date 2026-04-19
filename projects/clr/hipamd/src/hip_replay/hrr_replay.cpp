@@ -12,17 +12,48 @@
 #include <cmath>
 #include <unordered_map>
 #include <vector>
+#include <string>
 #include <chrono>
 
-#define HIP_CHECK(call)                                                       \
+// Most-recently-launched kernel info, used to attribute deferred GPU
+// errors (e.g. illegal-memory-access page faults that don't surface until
+// the next driver call after the faulty launch).
+struct LastAsyncOp {
+  std::string kind;          // "kernel <name>", "memcpy H2D", ...
+  uint64_t event_seq = 0;    // sequence id of the producing event
+};
+static LastAsyncOp g_last_async;
+
+// Wraps a HIP call and reports both the call's own error and any sticky
+// context error that pre-dated it.  Returns hipSuccess only if both are
+// clean; returns the first non-success error otherwise.
+//
+// If the call returns success but a sticky error existed, that means the
+// real fault was earlier (an async op).  The return-value error and the
+// sticky error may be the same code — we always blame the earlier op
+// since it's the actual cause.
+#define HIP_CHECK_AT(call, where)                                             \
   do {                                                                        \
-    hipError_t err = (call);                                                  \
-    if (err != hipSuccess) {                                                  \
-      fprintf(stderr, "[HRR] HIP error %d (%s) at %s:%d\n", err,             \
-              hipGetErrorString(err), __FILE__, __LINE__);                    \
-      return 1;                                                               \
+    hipError_t _pre  = hipPeekAtLastError();                                  \
+    hipError_t _ret  = (call);                                                \
+    hipError_t _err  = (_pre != hipSuccess) ? _pre : _ret;                    \
+    if (_err != hipSuccess) {                                                 \
+      const char* _attr = (_pre != hipSuccess && !g_last_async.kind.empty()) \
+          ? g_last_async.kind.c_str() : (where);                              \
+      fprintf(stderr,                                                         \
+              "[HRR] HIP error %d (%s)\n"                                     \
+              "[HRR]   surfaced at: %s (%s:%d)\n"                             \
+              "[HRR]   blamed on:   %s%s\n",                                  \
+              _err, hipGetErrorString(_err), (where), __FILE__, __LINE__,     \
+              _attr,                                                          \
+              (_pre != hipSuccess && !g_last_async.kind.empty())              \
+                  ? " (deferred from earlier async op)" : "");                \
+      (void)hipGetLastError();                                                \
+      return _err;                                                            \
     }                                                                         \
   } while (0)
+
+#define HIP_CHECK(call) HIP_CHECK_AT(call, #call)
 
 struct ReplayState {
   // Handle -> live GPU pointer
@@ -39,7 +70,11 @@ struct ReplayState {
   bool verify = false;
   bool timing = false;
   bool skip_device_sync = false;
-  bool sync_after_launch = false;
+  // Sync after every kernel launch by default.  Replay is a correctness
+  // tool, not a benchmark — making faults surface at the launch that
+  // caused them (instead of at some unrelated later driver call) is
+  // worth the per-kernel sync cost.  Disable with --async if needed.
+  bool sync_after_launch = true;
   bool verbose = false;
   std::string kernel_filter;
   std::string params_file;
@@ -163,6 +198,8 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
         if (hrr::read_blob(archive, mc.hash_lo, mc.hash_hi, blob)) {
           void* dst = translate_ptr(state, mc.dst_addr);
           if (dst) {
+            g_last_async = {"memcpy H2D " + std::to_string(mc.size) + " B",
+                            ev.header.sequence_id};
             HIP_CHECK(hipMemcpy(dst, blob.data(), mc.size,
                                 hipMemcpyHostToDevice));
           }
@@ -171,6 +208,8 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
         void* dst = translate_ptr(state, mc.dst_addr);
         void* src = translate_ptr(state, mc.src_addr);
         if (dst && src) {
+          g_last_async = {"memcpy D2D " + std::to_string(mc.size) + " B",
+                          ev.header.sequence_id};
           HIP_CHECK(hipMemcpy(dst, src, mc.size, hipMemcpyDeviceToDevice));
         }
       }
@@ -187,6 +226,8 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
         memcpy(&size, ev.raw_payload.data() + 12, 8);
         void* dst = translate_ptr(state, dst_addr);
         if (dst) {
+          g_last_async = {"memset " + std::to_string(size) + " B",
+                          ev.header.sequence_id};
           HIP_CHECK(hipMemset(dst, static_cast<int>(value), size));
         }
       }
@@ -295,9 +336,12 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
                 kl.kernel_name.c_str());
       }
 
-      // Build kernarg buffer from captured args
+      // Build kernarg buffer from captured args.  Track unresolved pointer
+      // args (non-zero handle that translates to NULL) so we can skip the
+      // launch instead of having the GPU page-fault on a NULL deref.
       std::vector<void*> arg_ptrs;
       std::vector<std::vector<uint8_t>> arg_storage;
+      std::vector<uint64_t> unresolved_handles;
 
       size_t arg_idx = 0;
       for (const auto& arg : kl.args) {
@@ -317,6 +361,9 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
           uint64_t handle;
           memcpy(&handle, arg.data.data(), 8);
           void* live_ptr = translate_ptr(state, handle);
+          if (!live_ptr && handle != 0) {
+            unresolved_handles.push_back(handle);
+          }
           storage.resize(sizeof(void*));
           memcpy(storage.data(), &live_ptr, sizeof(void*));
           if (state.verbose) {
@@ -347,6 +394,23 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
         arg_idx++;
       }
 
+      // If any required pointer arg couldn't be resolved, skip the launch.
+      // Letting the kernel run with NULL for a non-zero handle is a
+      // guaranteed GPU page-fault (illegal memory access) that will then
+      // poison every subsequent driver call with a sticky error.
+      if (!unresolved_handles.empty()) {
+        fprintf(stderr,
+                "[HRR] SKIP launch '%s' (event %llu): %zu pointer arg(s) "
+                "could not be resolved (first: handle=0x%llx).  Re-capture "
+                "with the full interposer (in particular hipMemcpyAsync / "
+                "hipMallocAsync) to record the missing allocation(s).\n",
+                kl.kernel_name.c_str(),
+                (unsigned long long)ev.header.sequence_id,
+                unresolved_handles.size(),
+                (unsigned long long)unresolved_handles.front());
+        break;
+      }
+
       // Launch with optional timing
       hipEvent_t start = nullptr, stop = nullptr;
       if (state.timing) {
@@ -355,6 +419,8 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
         hipEventRecord(start);
       }
 
+      g_last_async = {std::string("kernel '") + kl.kernel_name + "'",
+                      ev.header.sequence_id};
       HIP_CHECK(hipModuleLaunchKernel(
           func,
           launch_grid[0], launch_grid[1], launch_grid[2],
@@ -374,13 +440,25 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
 
       state.kernels_launched++;
 
-      // Sync after launch for debugging (shows GPU errors immediately)
+      // Sync after launch so GPU faults surface at the actual culprit
+      // rather than being deferred to the next unrelated driver call.
       if (state.sync_after_launch) {
         hipError_t sync_err = hipDeviceSynchronize();
         if (sync_err != hipSuccess) {
-          fprintf(stderr, "[HRR] GPU error after kernel '%s': %d (%s)\n",
-                  kl.kernel_name.c_str(), sync_err, hipGetErrorString(sync_err));
-        } else {
+          fprintf(stderr,
+                  "[HRR] GPU error after kernel '%s' (event %llu): "
+                  "%d (%s)\n"
+                  "[HRR]   grid=(%u,%u,%u) block=(%u,%u,%u) shared=%u "
+                  "args=%zu\n",
+                  kl.kernel_name.c_str(),
+                  (unsigned long long)ev.header.sequence_id,
+                  sync_err, hipGetErrorString(sync_err),
+                  launch_grid[0], launch_grid[1], launch_grid[2],
+                  launch_block[0], launch_block[1], launch_block[2],
+                  launch_shared, kl.args.size());
+          (void)hipGetLastError();
+          return sync_err;
+        } else if (state.verbose) {
           fprintf(stderr, "[HRR] Kernel '%s' OK\n", kl.kernel_name.c_str());
         }
       }
@@ -459,8 +537,10 @@ static void print_usage(const char* argv0) {
     "  --kernel-filter STR Only replay kernels containing STR in name\n"
     "  --params FILE       Load run_params.json to override kernel grid/block/\n"
     "                      shared_mem, scalar args, alloc sizes, and memcpy data\n"
-    "  --skip-device-sync  Skip all device/stream sync calls (for debugging)\n"
-    "  --sync-after-launch Sync after every kernel launch (shows GPU errors)\n"
+    "  --skip-device-sync  Skip all recorded device/stream sync events\n"
+    "  --async             Do NOT sync after every kernel launch (default is\n"
+    "                      to sync so faults are attributed to the right kernel)\n"
+    "  --sync-after-launch Deprecated; per-kernel sync is now the default\n"
     "  --verbose           Print each event as it is processed\n"
     "  --help              Show this help\n",
     argv0);
@@ -483,7 +563,9 @@ int main(int argc, char** argv) {
     } else if (strcmp(argv[i], "--skip-device-sync") == 0) {
       state.skip_device_sync = true;
     } else if (strcmp(argv[i], "--sync-after-launch") == 0) {
-      state.sync_after_launch = true;
+      state.sync_after_launch = true;  // now the default; kept for compat
+    } else if (strcmp(argv[i], "--async") == 0) {
+      state.sync_after_launch = false;
     } else if (strcmp(argv[i], "--verbose") == 0) {
       state.verbose = true;
     } else if (strcmp(argv[i], "--kernel-filter") == 0 && i + 1 < argc) {

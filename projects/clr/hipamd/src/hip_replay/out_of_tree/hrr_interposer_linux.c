@@ -35,8 +35,17 @@ static hipError_t (*real_hipMallocFromPoolAsync)(void**, size_t, void*, hipStrea
 static hipError_t (*real_hipFreeAsync)(void*, hipStream_t) = NULL;
 static hipError_t (*real_hipFree)(void*) = NULL;
 static hipError_t (*real_hipMemcpy)(void*, const void*, size_t, hipMemcpyKind) = NULL;
+static hipError_t (*real_hipMemcpyAsync)(void*, const void*, size_t,
+                                         hipMemcpyKind, hipStream_t) = NULL;
+static hipError_t (*real_hipMemcpyWithStream)(void*, const void*, size_t,
+                                              hipMemcpyKind, hipStream_t) = NULL;
 static hipError_t (*real_hipMemcpyHtoD)(void*, const void*, size_t) = NULL;
+static hipError_t (*real_hipMemcpyHtoDAsync)(void*, const void*, size_t,
+                                              hipStream_t) = NULL;
 static hipError_t (*real_hipMemcpyDtoH)(void*, const void*, size_t) = NULL;
+static hipError_t (*real_hipMemcpyDtoD)(void*, const void*, size_t) = NULL;
+static hipError_t (*real_hipMemcpyDtoDAsync)(void*, const void*, size_t,
+                                              hipStream_t) = NULL;
 static hipError_t (*real_hipMemset)(void*, int, size_t) = NULL;
 static hipError_t (*real_hipModuleLoad)(hipModule_t*, const char*) = NULL;
 static hipError_t (*real_hipModuleLoadData)(hipModule_t*, const void*) = NULL;
@@ -193,6 +202,35 @@ hipError_t hipMemcpy(void* dst, const void* src, size_t sizeBytes,
   FORWARD_OR_ERROR(hipMemcpy, (dst, src, sizeBytes, kind));
 }
 
+/* hipMemcpyAsync / hipMemcpyWithStream — async variants are the dominant
+ * H2D path in ROCm libraries (MIGraphX, rocBLAS, MIOpen).  Without
+ * intercepting them, H2D uploads are silently dropped from the trace and
+ * downstream kernels read uninitialized device memory, often page-faulting
+ * on a value the kernel interprets as a pointer.
+ *
+ * For H2D the source host buffer is captured immediately; this is safe
+ * because the host pages are valid at call time even though the GPU copy
+ * has not yet completed.  For D2D we record the event so replay can
+ * re-issue the copy between translated live pointers.  D2H carries no
+ * data needed for replay. */
+hipError_t hipMemcpyAsync(void* dst, const void* src, size_t sizeBytes,
+                          hipMemcpyKind kind, hipStream_t stream) {
+  LOAD_SYM(hipMemcpyAsync);
+  if (hrr_writer_enabled() && (kind == 1 /* H2D */ || kind == 3 /* D2D */)) {
+    hrr_record_memcpy(dst, src, sizeBytes, (unsigned int)kind, stream);
+  }
+  FORWARD_OR_ERROR(hipMemcpyAsync, (dst, src, sizeBytes, kind, stream));
+}
+
+hipError_t hipMemcpyWithStream(void* dst, const void* src, size_t sizeBytes,
+                               hipMemcpyKind kind, hipStream_t stream) {
+  LOAD_SYM(hipMemcpyWithStream);
+  if (hrr_writer_enabled() && (kind == 1 /* H2D */ || kind == 3 /* D2D */)) {
+    hrr_record_memcpy(dst, src, sizeBytes, (unsigned int)kind, stream);
+  }
+  FORWARD_OR_ERROR(hipMemcpyWithStream, (dst, src, sizeBytes, kind, stream));
+}
+
 /* hipMemcpyHtoD / hipMemcpyDtoH — explicit-direction variants used by MIGraphX */
 hipError_t hipMemcpyHtoD(void* dst, const void* src, size_t sizeBytes) {
   LOAD_SYM(hipMemcpyHtoD);
@@ -202,10 +240,36 @@ hipError_t hipMemcpyHtoD(void* dst, const void* src, size_t sizeBytes) {
   FORWARD_OR_ERROR(hipMemcpyHtoD, (dst, src, sizeBytes));
 }
 
+hipError_t hipMemcpyHtoDAsync(void* dst, const void* src, size_t sizeBytes,
+                              hipStream_t stream) {
+  LOAD_SYM(hipMemcpyHtoDAsync);
+  if (hrr_writer_enabled()) {
+    hrr_record_memcpy(dst, src, sizeBytes, 1 /* hipMemcpyHostToDevice */, stream);
+  }
+  FORWARD_OR_ERROR(hipMemcpyHtoDAsync, (dst, src, sizeBytes, stream));
+}
+
 hipError_t hipMemcpyDtoH(void* dst, const void* src, size_t sizeBytes) {
   LOAD_SYM(hipMemcpyDtoH);
   /* DtoH copies don't need blob capture (no GPU→CPU data needed for replay) */
   FORWARD_OR_ERROR(hipMemcpyDtoH, (dst, src, sizeBytes));
+}
+
+hipError_t hipMemcpyDtoD(void* dst, const void* src, size_t sizeBytes) {
+  LOAD_SYM(hipMemcpyDtoD);
+  if (hrr_writer_enabled()) {
+    hrr_record_memcpy(dst, src, sizeBytes, 3 /* hipMemcpyDeviceToDevice */, NULL);
+  }
+  FORWARD_OR_ERROR(hipMemcpyDtoD, (dst, src, sizeBytes));
+}
+
+hipError_t hipMemcpyDtoDAsync(void* dst, const void* src, size_t sizeBytes,
+                              hipStream_t stream) {
+  LOAD_SYM(hipMemcpyDtoDAsync);
+  if (hrr_writer_enabled()) {
+    hrr_record_memcpy(dst, src, sizeBytes, 3 /* hipMemcpyDeviceToDevice */, stream);
+  }
+  FORWARD_OR_ERROR(hipMemcpyDtoDAsync, (dst, src, sizeBytes, stream));
 }
 
 hipError_t hipMemset(void* dst, int value, size_t count) {
