@@ -142,6 +142,7 @@ static struct {
   char output_dir[512];
   char kernel_filter[256];
   size_t max_blob_mb;
+  size_t max_snap_mb;  /* per-output-snapshot cap; 0 = inherit max_blob_mb */
 
   FILE* events_file;
   HRR_MUTEX mu;
@@ -377,6 +378,16 @@ int hrr_writer_init(void) {
 
   const char* max_blob = getenv("HRR_MAX_BLOB_MB");
   if (max_blob) g.max_blob_mb = (size_t)atol(max_blob);
+
+  /* Per-output-snapshot cap.  Without this, snapshot capture treats every
+   * pointer arg as "owns the rest of its containing allocation", which for
+   * arena allocators (MIGraphX, rocBLAS workspaces, ONNX runtime, ...)
+   * sweeps in many unrelated tensors and produces noisy false-positive
+   * verification mismatches.  Default to 16 MB which is large enough for
+   * most individual tensor outputs but tight enough to avoid arena tails. */
+  g.max_snap_mb = 16;
+  const char* max_snap = getenv("HRR_MAX_SNAP_MB");
+  if (max_snap) g.max_snap_mb = (size_t)atol(max_snap);
 
   const char* verbose = getenv("HRR_VERBOSE");
   if (verbose && verbose[0] == '1') g.verbose = 1;
@@ -740,6 +751,12 @@ static int capture_output_snapshots(const uint64_t* ptr_handles, int num_ptrs,
     HRR_MUTEX_UNLOCK(&g.mu);
 
     if (snap_size == 0) continue;
+    /* Apply the snapshot-specific cap first (default 16 MB, tunable via
+     * HRR_MAX_SNAP_MB), then the global blob cap if set.  Snapshots get
+     * a tighter default than blobs because arena allocators make the
+     * "remainder of allocation" heuristic over-capture aggressively. */
+    if (g.max_snap_mb > 0 && snap_size > g.max_snap_mb * 1024 * 1024)
+      snap_size = g.max_snap_mb * 1024 * 1024;
     if (g.max_blob_mb > 0 && snap_size > g.max_blob_mb * 1024 * 1024)
       snap_size = g.max_blob_mb * 1024 * 1024;
 

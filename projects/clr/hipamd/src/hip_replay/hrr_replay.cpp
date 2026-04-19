@@ -68,6 +68,12 @@ struct ReplayState {
   std::unordered_map<uint32_t, hipStream_t> stream_map;
 
   bool verify = false;
+  // FP32 verification tolerances.  GPU work is rarely bit-exact across
+  // runs (atomic-op ordering, scheduler differences) so a strict memcmp
+  // produces noisy false positives.  Pass if max element-wise diff is
+  // within atol + rtol * max(|expected|).
+  float verify_atol = 1e-3f;
+  float verify_rtol = 1e-3f;
   bool timing = false;
   bool skip_device_sync = false;
   // Sync after every kernel launch by default.  Replay is a correctness
@@ -596,24 +602,48 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
             hipMemcpy(actual.data(), src, cmp_len,
                       hipMemcpyDeviceToHost);
 
-            if (cmp_len == expected.size() &&
-                memcmp(actual.data(), expected.data(), cmp_len) == 0) {
+            // Compute element-wise FP32 diff statistics.  Bit-exact match
+            // is the easy case; otherwise we apply a tolerance check
+            // (atol + rtol * max_expected_abs) before declaring failure.
+            bool exact = (cmp_len == expected.size() &&
+                          memcmp(actual.data(), expected.data(), cmp_len) == 0);
+            if (exact) {
               state.verify_pass++;
             } else {
-              state.verify_fail++;
               size_t num_f32 = cmp_len / 4;
               float max_diff = 0.0f;
+              float max_abs_exp = 0.0f;
               const float* a = reinterpret_cast<const float*>(actual.data());
               const float* e = reinterpret_cast<const float*>(expected.data());
               for (size_t i = 0; i < num_f32; i++) {
                 float d = std::fabs(a[i] - e[i]);
                 if (d > max_diff) max_diff = d;
+                float ae = std::fabs(e[i]);
+                if (ae > max_abs_exp) max_abs_exp = ae;
               }
-              fprintf(stderr,
-                      "[HRR] MISMATCH kernel '%s' output buffer "
-                      "(handle=0x%llx, max_diff=%.6g)\n",
-                      kl.kernel_name.c_str(),
-                      (unsigned long long)snap.ptr_handle, max_diff);
+              float threshold = state.verify_atol +
+                                state.verify_rtol * max_abs_exp;
+              if (cmp_len == expected.size() &&
+                  std::isfinite(max_diff) && max_diff <= threshold) {
+                state.verify_pass++;
+                if (state.verbose && max_diff > 0.0f) {
+                  fprintf(stderr,
+                          "[HRR] near-match kernel '%s' (handle=0x%llx, "
+                          "max_diff=%.6g, threshold=%.6g)\n",
+                          kl.kernel_name.c_str(),
+                          (unsigned long long)snap.ptr_handle,
+                          max_diff, threshold);
+                }
+              } else {
+                state.verify_fail++;
+                fprintf(stderr,
+                        "[HRR] MISMATCH kernel '%s' output buffer "
+                        "(handle=0x%llx, max_diff=%.6g, threshold=%.6g, "
+                        "max|expected|=%.6g)\n",
+                        kl.kernel_name.c_str(),
+                        (unsigned long long)snap.ptr_handle,
+                        max_diff, threshold, max_abs_exp);
+              }
             }
           }
         }
@@ -647,6 +677,8 @@ static void print_usage(const char* argv0) {
     "\n"
     "Options:\n"
     "  --verify            Compare output buffers with recorded snapshots\n"
+    "  --verify-atol F     Absolute FP32 tolerance for --verify (default 1e-3)\n"
+    "  --verify-rtol F     Relative FP32 tolerance for --verify (default 1e-3)\n"
     "  --timing            Report per-kernel GPU timing\n"
     "  --kernel-filter STR Only replay kernels containing STR in name\n"
     "  --params FILE       Load run_params.json to override kernel grid/block/\n"
@@ -672,6 +704,10 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--verify") == 0) {
       state.verify = true;
+    } else if (strcmp(argv[i], "--verify-atol") == 0 && i + 1 < argc) {
+      state.verify_atol = static_cast<float>(atof(argv[++i]));
+    } else if (strcmp(argv[i], "--verify-rtol") == 0 && i + 1 < argc) {
+      state.verify_rtol = static_cast<float>(atof(argv[++i]));
     } else if (strcmp(argv[i], "--timing") == 0) {
       state.timing = true;
     } else if (strcmp(argv[i], "--skip-device-sync") == 0) {
