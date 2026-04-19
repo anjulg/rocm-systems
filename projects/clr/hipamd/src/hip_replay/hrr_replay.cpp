@@ -124,6 +124,7 @@ static hipModule_t get_module_for_co(ReplayState& state,
   if (err != hipSuccess) {
     fprintf(stderr, "[HRR] Failed to load code object %s: %d (%s)\n",
             hex.c_str(), err, hipGetErrorString(err));
+    (void)hipGetLastError();
     return nullptr;
   }
 
@@ -320,6 +321,12 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
           func = nullptr;
         }
       }
+
+      // The search loop above probes every loaded module and an
+      // hipErrorNotFound on misses is expected.  Clear the sticky context
+      // error so HIP_CHECK on the launch below doesn't misattribute it as
+      // a deferred async fault.
+      (void)hipGetLastError();
 
       if (!func) {
         fprintf(stderr, "[HRR] Kernel '%s' not found in any loaded module "
@@ -649,6 +656,9 @@ int main(int argc, char** argv) {
               hex.c_str());
     }
   }
+  // Pre-load failures (e.g. arch mismatch on a multi-target capture) are
+  // expected and shouldn't poison the context for the first replayed event.
+  (void)hipGetLastError();
 
   if (!archive.code_objects.empty())
     printf("[HRR] Pre-loaded %zu / %zu code objects\n",
