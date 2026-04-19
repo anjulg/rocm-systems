@@ -151,6 +151,11 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
       }
       void* ptr = nullptr;
       HIP_CHECK(hipMalloc(&ptr, alloc_size));
+      // Zero-init so that if a downstream H2D copy was missed by the
+      // recorder (e.g. a trace from a pre-hipMemcpyAsync interposer),
+      // reads return 0 instead of stale GPU memory that may decode as a
+      // wild pointer/index and trigger an illegal-memory-access fault.
+      (void)hipMemset(ptr, 0, alloc_size);
       state.alloc_map[ev.malloc_ev.ptr_handle] = ptr;
       state.alloc_sizes[ev.malloc_ev.ptr_handle] = alloc_size;
       break;
@@ -296,20 +301,50 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
         }
       }
 
-      // Find kernel function in loaded modules
+      // Find kernel function in loaded modules.
+      //
+      // Priority 1: the kernel's recorded code-object hash uniquely
+      // identifies which code object owned the function at capture time.
+      // This is essential when the same kernel name (e.g.
+      // "mlir_convolution_broadcast_add_relu") is compiled per-shape into
+      // many separate code objects — picking the wrong one returns a
+      // valid-looking hipFunction_t but launches a kernel whose memory
+      // layout doesn't match the recorded args, causing a GPU page-fault.
       hipFunction_t func = nullptr;
-      for (auto& [handle, mod] : state.module_map) {
-        hipError_t err = hipModuleGetFunction(&func, mod,
-                                              kl.kernel_name.c_str());
-        if (state.verbose)
-          fprintf(stderr, "[HRR]   module_map[0x%llx] mod=%p -> %s\n",
-                  (unsigned long long)handle, (void*)mod,
-                  (err == hipSuccess && func) ? "FOUND" : "miss");
-        if (err == hipSuccess && func) break;
-        func = nullptr;
+      if (kl.co_hash_lo != 0 || kl.co_hash_hi != 0) {
+        std::string co_hex = hrr::hash_hex(kl.co_hash_lo, kl.co_hash_hi);
+        auto cit = state.co_modules.find(co_hex);
+        if (cit != state.co_modules.end()) {
+          hipError_t err = hipModuleGetFunction(&func, cit->second,
+                                                kl.kernel_name.c_str());
+          if (state.verbose)
+            fprintf(stderr, "[HRR]   co_hash[%s] mod=%p -> %s\n",
+                    co_hex.c_str(), (void*)cit->second,
+                    (err == hipSuccess && func) ? "FOUND" : "miss");
+          if (err != hipSuccess) func = nullptr;
+        } else if (state.verbose) {
+          fprintf(stderr, "[HRR]   co_hash[%s] not pre-loaded, falling back\n",
+                  co_hex.c_str());
+        }
       }
-      // Also try all code object modules
+
+      // Priority 2 (fallback): modules registered via EVENT_MODULE_LOAD.
       if (!func) {
+        for (auto& [handle, mod] : state.module_map) {
+          hipError_t err = hipModuleGetFunction(&func, mod,
+                                                kl.kernel_name.c_str());
+          if (state.verbose)
+            fprintf(stderr, "[HRR]   module_map[0x%llx] mod=%p -> %s\n",
+                    (unsigned long long)handle, (void*)mod,
+                    (err == hipSuccess && func) ? "FOUND" : "miss");
+          if (err == hipSuccess && func) break;
+          func = nullptr;
+        }
+      }
+      // Priority 3 (last resort): scan every pre-loaded code object.
+      // Only safe for traces with no co_hash recorded (legacy capture);
+      // for modern traces this would mask the wrong-module bug above.
+      if (!func && kl.co_hash_lo == 0 && kl.co_hash_hi == 0) {
         for (auto& [hex, mod] : state.co_modules) {
           hipError_t err = hipModuleGetFunction(&func, mod,
                                                 kl.kernel_name.c_str());
@@ -329,10 +364,20 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
       (void)hipGetLastError();
 
       if (!func) {
-        fprintf(stderr, "[HRR] Kernel '%s' not found in any loaded module "
-                "(%zu module_map + %zu co_modules searched)\n",
-                kl.kernel_name.c_str(),
-                state.module_map.size(), state.co_modules.size());
+        if (kl.co_hash_lo != 0 || kl.co_hash_hi != 0) {
+          fprintf(stderr,
+                  "[HRR] Kernel '%s' not found via recorded co_hash %s "
+                  "(%zu module_map probed)\n",
+                  kl.kernel_name.c_str(),
+                  hrr::hash_hex(kl.co_hash_lo, kl.co_hash_hi).c_str(),
+                  state.module_map.size());
+        } else {
+          fprintf(stderr,
+                  "[HRR] Kernel '%s' not found in any loaded module "
+                  "(%zu module_map + %zu co_modules searched)\n",
+                  kl.kernel_name.c_str(),
+                  state.module_map.size(), state.co_modules.size());
+        }
         break;
       }
 
@@ -346,9 +391,20 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
       // Build kernarg buffer from captured args.  Track unresolved pointer
       // args (non-zero handle that translates to NULL) so we can skip the
       // launch instead of having the GPU page-fault on a NULL deref.
+      // Also stash per-arg info so we can dump it if the GPU faults.
+      struct ArgDump {
+        size_t   idx;
+        uint8_t  kind;     // 1=ptr, 0=scalar, 2=hidden
+        uint64_t handle;   // pointer arg's recorded handle (raw bytes for scalar <=8B)
+        void*    live_ptr;
+        uint64_t alloc_base;   // 0 if unknown
+        size_t   alloc_size;   // 0 if unknown
+        size_t   raw_size;
+      };
       std::vector<void*> arg_ptrs;
       std::vector<std::vector<uint8_t>> arg_storage;
       std::vector<uint64_t> unresolved_handles;
+      std::vector<ArgDump> arg_dumps;
 
       size_t arg_idx = 0;
       for (const auto& arg : kl.args) {
@@ -356,6 +412,7 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
           if (state.verbose) {
             fprintf(stderr, "  arg[%zu]: hidden (skipped)\n", arg_idx);
           }
+          arg_dumps.push_back({arg_idx, 2, 0, nullptr, 0, 0, arg.data.size()});
           arg_idx++;
           continue;  // skip hidden
         }
@@ -371,6 +428,29 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
           if (!live_ptr && handle != 0) {
             unresolved_handles.push_back(handle);
           }
+          // Find which captured allocation this handle came from for diagnostics
+          uint64_t alloc_base = 0;
+          size_t   alloc_size = 0;
+          if (live_ptr) {
+            auto exact = state.alloc_map.find(handle);
+            if (exact != state.alloc_map.end()) {
+              alloc_base = handle;
+              auto sz = state.alloc_sizes.find(handle);
+              if (sz != state.alloc_sizes.end()) alloc_size = sz->second;
+            } else {
+              for (const auto& [base, p] : state.alloc_map) {
+                auto sz = state.alloc_sizes.find(base);
+                if (sz != state.alloc_sizes.end() &&
+                    handle >= base && handle < base + sz->second) {
+                  alloc_base = base;
+                  alloc_size = sz->second;
+                  break;
+                }
+              }
+            }
+          }
+          arg_dumps.push_back({arg_idx, 1, handle, live_ptr,
+                               alloc_base, alloc_size, arg.data.size()});
           storage.resize(sizeof(void*));
           memcpy(storage.data(), &live_ptr, sizeof(void*));
           if (state.verbose) {
@@ -390,11 +470,14 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
                 fprintf(stderr, "  arg[%zu]: scalar OVERRIDDEN\n", arg_idx);
             }
           }
+          uint64_t scalar_val = 0;
+          memcpy(&scalar_val, storage.data(),
+                 std::min(storage.size(), sizeof(scalar_val)));
+          arg_dumps.push_back({arg_idx, 0, scalar_val, nullptr, 0, 0,
+                               arg.data.size()});
           if (state.verbose && arg.data.size() <= 8) {
-            uint64_t val = 0;
-            memcpy(&val, storage.data(), std::min(storage.size(), sizeof(val)));
             fprintf(stderr, "  arg[%zu]: scalar size=%u val=0x%llx\n",
-                    arg_idx, arg.size, (unsigned long long)val);
+                    arg_idx, arg.size, (unsigned long long)scalar_val);
           }
         }
         arg_ptrs.push_back(storage.data());
@@ -463,6 +546,30 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
                   launch_grid[0], launch_grid[1], launch_grid[2],
                   launch_block[0], launch_block[1], launch_block[2],
                   launch_shared, kl.args.size());
+          for (const auto& d : arg_dumps) {
+            if (d.kind == 1) {  // pointer
+              uint64_t off = (d.alloc_base && d.handle >= d.alloc_base)
+                  ? d.handle - d.alloc_base : 0;
+              fprintf(stderr,
+                      "[HRR]   arg[%zu] PTR  handle=0x%llx -> %p  "
+                      "alloc_base=0x%llx alloc_size=%zu off=%llu\n",
+                      d.idx, (unsigned long long)d.handle, d.live_ptr,
+                      (unsigned long long)d.alloc_base, d.alloc_size,
+                      (unsigned long long)off);
+            } else if (d.kind == 0) {  // scalar
+              fprintf(stderr,
+                      "[HRR]   arg[%zu] SCAL size=%zu val=0x%llx\n",
+                      d.idx, d.raw_size, (unsigned long long)d.handle);
+            } else {
+              fprintf(stderr, "[HRR]   arg[%zu] HIDDEN size=%zu\n",
+                      d.idx, d.raw_size);
+            }
+          }
+          fprintf(stderr,
+                  "[HRR]   Hint: most page-faults at this stage are caused "
+                  "by stale/uninitialized GPU memory whose H2D upload was "
+                  "missed by the recorder.  Re-capture with the updated "
+                  "interposer (hipMemcpyAsync interception) and retry.\n");
           (void)hipGetLastError();
           return sync_err;
         } else if (state.verbose) {
