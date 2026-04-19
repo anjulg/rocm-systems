@@ -97,20 +97,35 @@ static void* hrr_load_hip_sym(const char* name) {
   do { if (!real_##name) return -1; return real_##name args; } while(0)
 
 static int g_initialized = 0;
+static int g_device_ops_set = 0;
+
+/* Resolve and register the real device ops used by the writer for full-mode
+ * output snapshot capture (hipDeviceSynchronize + hipMemcpy D2H readback).
+ *
+ * This MUST be retried on every interception call until it succeeds: when
+ * ensure_init() runs from the LD_PRELOAD constructor, libamdhip64 is not
+ * yet in the dlsym chain and both LOAD_SYM lookups return NULL.  Without
+ * retry, g.device_sync / g.memcpy_fn stay NULL forever and
+ * capture_output_snapshots() silently returns 0 — which manifests as
+ * "Verification: 0 passed, 0 failed" on replay even with HRR_MODE=full. */
+static void try_register_device_ops(void) {
+  if (g_device_ops_set || !hrr_writer_enabled()) return;
+  LOAD_SYM(hipDeviceSynchronize);
+  LOAD_SYM(hipMemcpy);
+  if (real_hipDeviceSynchronize && real_hipMemcpy) {
+    hrr_set_device_ops((hrr_device_sync_fn)real_hipDeviceSynchronize,
+                       (hrr_memcpy_fn)real_hipMemcpy);
+    g_device_ops_set = 1;
+  }
+}
 
 static void ensure_init(void) {
-  if (g_initialized) return;
-  g_initialized = 1;
-  hrr_writer_init();
-  if (hrr_writer_enabled()) {
-    atexit(hrr_writer_shutdown);
-    /* Provide real HIP device ops for full-mode output snapshot capture */
-    LOAD_SYM(hipDeviceSynchronize);
-    LOAD_SYM(hipMemcpy);
-    if (real_hipDeviceSynchronize && real_hipMemcpy)
-      hrr_set_device_ops((hrr_device_sync_fn)real_hipDeviceSynchronize,
-                         (hrr_memcpy_fn)real_hipMemcpy);
+  if (!g_initialized) {
+    g_initialized = 1;
+    hrr_writer_init();
+    if (hrr_writer_enabled()) atexit(hrr_writer_shutdown);
   }
+  try_register_device_ops();
 }
 
 /* ---- Interposed functions ---- */
@@ -391,6 +406,9 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
     unsigned int sharedMemBytes, hipStream_t hStream,
     void** kernelParams, void** extra) {
   LOAD_SYM(hipModuleLaunchKernel);
+  /* Ensure full-mode output snapshot capture has its device ops, even if
+   * the app never went through any of the malloc-family entry points. */
+  try_register_device_ops();
 
   /* Launch first so full-mode snapshot capture can sync + readback */
   if (!real_hipModuleLaunchKernel) return -1;
