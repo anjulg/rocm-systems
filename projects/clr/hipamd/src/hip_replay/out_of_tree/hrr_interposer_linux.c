@@ -112,9 +112,15 @@ static void try_register_device_ops(void) {
   if (g_device_ops_set || !hrr_writer_enabled()) return;
   LOAD_SYM(hipDeviceSynchronize);
   LOAD_SYM(hipMemcpy);
+  LOAD_SYM(hipMemset);
   if (real_hipDeviceSynchronize && real_hipMemcpy) {
     hrr_set_device_ops((hrr_device_sync_fn)real_hipDeviceSynchronize,
                        (hrr_memcpy_fn)real_hipMemcpy);
+    /* hipMemset is optional — only used in full mode to zero-init buffers
+     * on hipMalloc so recorder and replayer see identical initial state. */
+    if (real_hipMemset) {
+      hrr_set_memset_op((hrr_memset_fn)real_hipMemset);
+    }
     g_device_ops_set = 1;
   }
 }

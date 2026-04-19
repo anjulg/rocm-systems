@@ -170,6 +170,7 @@ static struct {
   /* Device callbacks for full-mode output snapshot capture */
   hrr_device_sync_fn device_sync;
   hrr_memcpy_fn      memcpy_fn;
+  hrr_memset_fn      memset_fn;
 
   kernel_summary_t* kernel_summaries;
   int num_kernel_summaries;
@@ -589,6 +590,19 @@ void hrr_record_malloc(const void* ptr, size_t size, unsigned int flags) {
     g.allocs[g.num_allocs++] = (alloc_entry_t){(uintptr_t)ptr, handle, size};
   }
   HRR_MUTEX_UNLOCK(&g.mu);
+
+  /* In full mode the writer captures output snapshots that may include the
+   * tail of an arena allocation (we don't know how much of the buffer the
+   * kernel actually wrote).  hipMalloc returns uninitialized device memory,
+   * so any byte the kernel doesn't touch contains garbage values that vary
+   * run-to-run.  The replayer zero-inits on hipMalloc; if we don't match
+   * that here, --verify will compare arena garbage on the recorder against
+   * zeros on the replayer and report wholesale false-positive mismatches.
+   * Skip the zero-init in non-full modes to avoid changing observable
+   * behaviour for capture sessions that don't snapshot outputs. */
+  if (g.mode == 2 && ptr && size > 0 && g.memset_fn) {
+    (void)g.memset_fn((void*)(uintptr_t)ptr, 0, size);
+  }
 
 #pragma pack(push,1)
   struct { uint64_t h; uint64_t s; uint32_t f; } pl = {handle, size, flags};
@@ -1166,6 +1180,10 @@ void hrr_record_stream_sync(const void* stream) {
 void hrr_set_device_ops(hrr_device_sync_fn sync_fn, hrr_memcpy_fn memcpy_fn) {
   g.device_sync = sync_fn;
   g.memcpy_fn   = memcpy_fn;
+}
+
+void hrr_set_memset_op(hrr_memset_fn memset_fn) {
+  g.memset_fn = memset_fn;
 }
 
 int hrr_capture_mode(void) { return g.mode; }

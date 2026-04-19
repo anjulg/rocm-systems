@@ -96,11 +96,17 @@ int hrr_lookup_function_co_hash(const void* func_handle,
  * and read back output buffers after each kernel launch.  Must point to the
  * REAL HIP functions (not the proxy wrappers) to avoid re-entrancy.
  *   sync_fn:   hipDeviceSynchronize()
- *   memcpy_fn: hipMemcpy(dst, src, size, kind)  — called with kind=2 (D2H) */
+ *   memcpy_fn: hipMemcpy(dst, src, size, kind)  — called with kind=2 (D2H)
+ *   memset_fn: hipMemset(dst, value, size)      — used to zero-init buffers
+ *              on hipMalloc so that record-time and replay-time see the same
+ *              initial GPU memory (replay zero-inits its own allocations).
+ *              May be NULL; if NULL, zero-init is skipped. */
 typedef int (*hrr_device_sync_fn)(void);
 typedef int (*hrr_memcpy_fn)(void* dst, const void* src, size_t size,
                              unsigned int kind);
+typedef int (*hrr_memset_fn)(void* dst, int value, size_t size);
 void hrr_set_device_ops(hrr_device_sync_fn sync_fn, hrr_memcpy_fn memcpy_fn);
+void hrr_set_memset_op(hrr_memset_fn memset_fn);
 
 /* Returns the current capture mode (0=timeline, 1=inputs, 2=full). */
 int hrr_capture_mode(void);

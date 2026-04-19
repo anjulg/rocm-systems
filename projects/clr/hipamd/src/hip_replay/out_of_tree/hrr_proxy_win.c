@@ -320,6 +320,11 @@ static void ensure_hrr_init(void) {
     if (real_hipDeviceSynchronize && real_hipMemcpy)
       hrr_set_device_ops(real_hipDeviceSynchronize,
                          (hrr_memcpy_fn)real_hipMemcpy);
+    /* Optional: zero-init buffers in full mode so recorder and replayer
+     * see the same initial GPU memory and arena tails don't produce
+     * false-positive verification mismatches. */
+    if (real_hipMemset)
+      hrr_set_memset_op((hrr_memset_fn)real_hipMemset);
   }
 }
 
