@@ -47,12 +47,31 @@ static hipError_t (*real_hipMemcpyDtoD)(void*, const void*, size_t) = NULL;
 static hipError_t (*real_hipMemcpyDtoDAsync)(void*, const void*, size_t,
                                               hipStream_t) = NULL;
 static hipError_t (*real_hipMemset)(void*, int, size_t) = NULL;
+static hipError_t (*real_hipMemsetAsync)(void*, int, size_t, hipStream_t) = NULL;
+static hipError_t (*real_hipMemsetD8)(void*, unsigned char, size_t) = NULL;
+static hipError_t (*real_hipMemsetD8Async)(void*, unsigned char, size_t, hipStream_t) = NULL;
+static hipError_t (*real_hipMemsetD16)(void*, unsigned short, size_t) = NULL;
+static hipError_t (*real_hipMemsetD16Async)(void*, unsigned short, size_t, hipStream_t) = NULL;
+static hipError_t (*real_hipMemsetD32)(void*, int, size_t) = NULL;
+static hipError_t (*real_hipMemsetD32Async)(void*, int, size_t, hipStream_t) = NULL;
+static hipError_t (*real_hipMemcpy2D)(void*, size_t, const void*, size_t, size_t,
+                                       size_t, hipMemcpyKind) = NULL;
+static hipError_t (*real_hipMemcpy2DAsync)(void*, size_t, const void*, size_t, size_t,
+                                            size_t, hipMemcpyKind, hipStream_t) = NULL;
+static hipError_t (*real_hipHostMalloc)(void**, size_t, unsigned int) = NULL;
+static hipError_t (*real_hipHostFree)(void*) = NULL;
+static hipError_t (*real_hipHostRegister)(void*, size_t, unsigned int) = NULL;
+static hipError_t (*real_hipHostUnregister)(void*) = NULL;
+static hipError_t (*real_hipHostGetDevicePointer)(void**, void*, unsigned int) = NULL;
 static hipError_t (*real_hipModuleLoad)(hipModule_t*, const char*) = NULL;
 static hipError_t (*real_hipModuleLoadData)(hipModule_t*, const void*) = NULL;
 static hipError_t (*real_hipModuleUnload)(hipModule_t) = NULL;
 static hipError_t (*real_hipModuleLaunchKernel)(hipFunction_t, unsigned, unsigned,
     unsigned, unsigned, unsigned, unsigned, unsigned, hipStream_t,
     void**, void**) = NULL;
+static hipError_t (*real_hipModuleLaunchCooperativeKernel)(hipFunction_t,
+    unsigned, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned,
+    hipStream_t, void**) = NULL;
 static hipError_t (*real_hipModuleGetFunction)(hipFunction_t*, hipModule_t,
     const char*) = NULL;
 static hipError_t (*real_hipDeviceSynchronize)(void) = NULL;
@@ -293,12 +312,212 @@ hipError_t hipMemcpyDtoDAsync(void* dst, const void* src, size_t sizeBytes,
   FORWARD_OR_ERROR(hipMemcpyDtoDAsync, (dst, src, sizeBytes, stream));
 }
 
+/* Host-mapped memory APIs.
+ *
+ * MIGraphX (and other inference frameworks) skip explicit hipMemcpy for the
+ * model input by pinning the user's CPU buffer with hipHostRegister and
+ * obtaining a device-accessible alias via hipHostGetDevicePointer.  The GPU
+ * kernel then reads the host bytes directly via that alias.  Without
+ * intercepting these APIs, the recorder never sees the input bytes at all:
+ * the kernel arg points to an "untracked" address (which find_alloc_handle
+ * registers as a 1MB synthetic alloc full of zeros) and on replay the kernel
+ * executes against that zero buffer, producing constant or zero outputs and
+ * cascading verification failures.
+ *
+ * Treat each pinned host region as a malloc, and synthesize an H2D memcpy
+ * carrying the current host bytes so replay restores them into the
+ * corresponding live device alloc before the first kernel runs.  When
+ * hipHostGetDevicePointer returns an alias different from the host pointer,
+ * register both addresses (some HIP configurations return a dedicated
+ * device-mapped address rather than a 1:1 alias). */
+hipError_t hipHostMalloc(void** ptr, size_t size, unsigned int flags) {
+  LOAD_SYM(hipHostMalloc);
+  ensure_init();
+  if (!real_hipHostMalloc) return -1;
+  hipError_t ret = real_hipHostMalloc(ptr, size, flags);
+  if (ret == 0 && hrr_writer_enabled() && ptr && *ptr) {
+    /* Buffer is fresh / not yet filled — record the alloc only.  Any later
+     * data the host writes into this buffer will be observed via the
+     * H2D snapshot we synthesise at hipHostUnregister/Free time, OR via
+     * the kernel's own input snapshot when it reads the buffer. */
+    hrr_record_host_alloc(*ptr, size, flags);
+  }
+  return ret;
+}
+
+hipError_t hipHostFree(void* ptr) {
+  LOAD_SYM(hipHostFree);
+  if (hrr_writer_enabled()) {
+    hrr_record_free(ptr);
+  }
+  FORWARD_OR_ERROR(hipHostFree, (ptr));
+}
+
+hipError_t hipHostRegister(void* ptr, size_t size, unsigned int flags) {
+  LOAD_SYM(hipHostRegister);
+  ensure_init();
+  if (!real_hipHostRegister) return -1;
+  hipError_t ret = real_hipHostRegister(ptr, size, flags);
+  if (ret == 0 && hrr_writer_enabled() && ptr) {
+    /* Pin the existing buffer.  At this point the host bytes are already
+     * the meaningful payload (caller filled them before pinning), so capture
+     * them now as a synthetic H2D blob keyed on the host address — the same
+     * address the kernel will receive as its device pointer. */
+    hrr_record_host_alloc(ptr, size, flags);
+    hrr_record_memcpy(ptr, ptr, size, 1 /* hipMemcpyHostToDevice */, NULL);
+  }
+  return ret;
+}
+
+hipError_t hipHostUnregister(void* ptr) {
+  LOAD_SYM(hipHostUnregister);
+  if (hrr_writer_enabled()) {
+    hrr_record_free(ptr);
+  }
+  FORWARD_OR_ERROR(hipHostUnregister, (ptr));
+}
+
+hipError_t hipHostGetDevicePointer(void** dev_ptr, void* host_ptr,
+                                   unsigned int flags) {
+  LOAD_SYM(hipHostGetDevicePointer);
+  if (!real_hipHostGetDevicePointer) return -1;
+  hipError_t ret = real_hipHostGetDevicePointer(dev_ptr, host_ptr, flags);
+  if (ret == 0 && hrr_writer_enabled() && dev_ptr && *dev_ptr &&
+      *dev_ptr != host_ptr) {
+    /* Distinct device alias — register it so kernel args using *dev_ptr also
+     * resolve.  Size is unknown here; reuse a generous 1 MB placeholder which
+     * is the same fallback hrr_record_kernel_launch uses for untracked args. */
+    hrr_record_host_alloc(*dev_ptr, 1024 * 1024, 0);
+  }
+  return ret;
+}
+
 hipError_t hipMemset(void* dst, int value, size_t count) {
   LOAD_SYM(hipMemset);
   if (hrr_writer_enabled()) {
     hrr_record_memset(dst, value, count, NULL);
   }
   FORWARD_OR_ERROR(hipMemset, (dst, value, count));
+}
+
+/* Async / typed memset variants.
+ *
+ * MIOpen, rocBLAS, hipBLASLt, and MIGraphX itself use hipMemsetAsync to
+ * zero workspace buffers and intermediate tensors before launching kernels
+ * that read-modify-write them.  Without intercepting these, replay sees
+ * stale (uninitialized) memory at those addresses, kernels read garbage,
+ * and downstream verification fails with NaN/Inf cascades.  This was the
+ * Linux-specific divergence vs Windows (which captures these via the
+ * proxy DLL): MIOpen ships only on Linux, so the missing memset path was
+ * only exposed in the Linux capture pipeline.
+ *
+ * The typed variants (D8/D16/D32) splat a fixed pattern of that width.
+ * Convert them to a byte-equivalent for hrr_record_memset by repeating
+ * only when the pattern is byte-uniform; otherwise we fall through to a
+ * raw record using value & 0xFF, which loses information but is still
+ * better than missing the event entirely.  In practice MIOpen / rocBLAS
+ * use these only with value=0. */
+hipError_t hipMemsetAsync(void* dst, int value, size_t sizeBytes,
+                          hipStream_t stream) {
+  LOAD_SYM(hipMemsetAsync);
+  if (hrr_writer_enabled()) {
+    hrr_record_memset(dst, value, sizeBytes, stream);
+  }
+  FORWARD_OR_ERROR(hipMemsetAsync, (dst, value, sizeBytes, stream));
+}
+
+hipError_t hipMemsetD8(void* dst, unsigned char value, size_t count) {
+  LOAD_SYM(hipMemsetD8);
+  if (hrr_writer_enabled()) {
+    hrr_record_memset(dst, (int)value, count, NULL);
+  }
+  FORWARD_OR_ERROR(hipMemsetD8, (dst, value, count));
+}
+
+hipError_t hipMemsetD8Async(void* dst, unsigned char value, size_t count,
+                            hipStream_t stream) {
+  LOAD_SYM(hipMemsetD8Async);
+  if (hrr_writer_enabled()) {
+    hrr_record_memset(dst, (int)value, count, stream);
+  }
+  FORWARD_OR_ERROR(hipMemsetD8Async, (dst, value, count, stream));
+}
+
+hipError_t hipMemsetD16(void* dst, unsigned short value, size_t count) {
+  LOAD_SYM(hipMemsetD16);
+  if (hrr_writer_enabled()) {
+    /* count is element count, not bytes — most callers use value=0 so the
+     * byte-extended pattern is identical (0x00). */
+    unsigned char b = (unsigned char)(value & 0xFF);
+    hrr_record_memset(dst, (int)b, count * 2, NULL);
+  }
+  FORWARD_OR_ERROR(hipMemsetD16, (dst, value, count));
+}
+
+hipError_t hipMemsetD16Async(void* dst, unsigned short value, size_t count,
+                             hipStream_t stream) {
+  LOAD_SYM(hipMemsetD16Async);
+  if (hrr_writer_enabled()) {
+    unsigned char b = (unsigned char)(value & 0xFF);
+    hrr_record_memset(dst, (int)b, count * 2, stream);
+  }
+  FORWARD_OR_ERROR(hipMemsetD16Async, (dst, value, count, stream));
+}
+
+hipError_t hipMemsetD32(void* dst, int value, size_t count) {
+  LOAD_SYM(hipMemsetD32);
+  if (hrr_writer_enabled()) {
+    unsigned char b = (unsigned char)(value & 0xFF);
+    hrr_record_memset(dst, (int)b, count * 4, NULL);
+  }
+  FORWARD_OR_ERROR(hipMemsetD32, (dst, value, count));
+}
+
+hipError_t hipMemsetD32Async(void* dst, int value, size_t count,
+                             hipStream_t stream) {
+  LOAD_SYM(hipMemsetD32Async);
+  if (hrr_writer_enabled()) {
+    unsigned char b = (unsigned char)(value & 0xFF);
+    hrr_record_memset(dst, (int)b, count * 4, stream);
+  }
+  FORWARD_OR_ERROR(hipMemsetD32Async, (dst, value, count, stream));
+}
+
+/* 2D memcpy — used by rocBLAS for sub-matrix transfers (leading-dimension
+ * stride != width).  When pitch == width we collapse to a single 1D
+ * memcpy; otherwise record one H2D event per row so the replay can
+ * faithfully recreate the strided layout in the destination buffer. */
+static void record_memcpy_2d(void* dst, size_t dpitch, const void* src,
+                             size_t spitch, size_t width, size_t height,
+                             hipMemcpyKind kind, hipStream_t stream) {
+  if (!hrr_writer_enabled()) return;
+  if (kind != 1 /* H2D */ && kind != 3 /* D2D */) return;
+  if (height == 0 || width == 0) return;
+  if (dpitch == width && spitch == width) {
+    hrr_record_memcpy(dst, src, width * height, (unsigned int)kind, stream);
+    return;
+  }
+  for (size_t r = 0; r < height; ++r) {
+    void* drow = (char*)dst + r * dpitch;
+    const void* srow = (const char*)src + r * spitch;
+    hrr_record_memcpy(drow, srow, width, (unsigned int)kind, stream);
+  }
+}
+
+hipError_t hipMemcpy2D(void* dst, size_t dpitch, const void* src, size_t spitch,
+                       size_t width, size_t height, hipMemcpyKind kind) {
+  LOAD_SYM(hipMemcpy2D);
+  record_memcpy_2d(dst, dpitch, src, spitch, width, height, kind, NULL);
+  FORWARD_OR_ERROR(hipMemcpy2D, (dst, dpitch, src, spitch, width, height, kind));
+}
+
+hipError_t hipMemcpy2DAsync(void* dst, size_t dpitch, const void* src,
+                            size_t spitch, size_t width, size_t height,
+                            hipMemcpyKind kind, hipStream_t stream) {
+  LOAD_SYM(hipMemcpy2DAsync);
+  record_memcpy_2d(dst, dpitch, src, spitch, width, height, kind, stream);
+  FORWARD_OR_ERROR(hipMemcpy2DAsync,
+                   (dst, dpitch, src, spitch, width, height, kind, stream));
 }
 
 /* Compute the true byte extent of an ELF64 binary by walking section headers.
@@ -435,11 +654,52 @@ hipError_t hipModuleLaunchKernel(hipFunction_t f,
   return ret;
 }
 
-/* Note: hipLaunchKernel (<<<>>> / hipLaunchKernelGGL path) is intentionally
- * NOT intercepted here. Its ABI uses dim3 (a C++ struct with user-provided
- * constructor) which cannot be safely forwarded from a plain-C interposer.
- * MIGraphX and other ONNX-compiled workloads use hipModuleLaunchKernel for
- * pre-compiled code objects, which is captured above. */
+/* hipModuleLaunchCooperativeKernel — used by MIOpen for some convolution
+ * implementations and any kernel that needs cooperative groups grid sync.
+ *
+ * MIGraphX delegates conv/pool layers to MIOpen on Linux; without this
+ * interception, MIOpen's internal kernel launches between two MIGraphX
+ * MLIR kernels are silently dropped from the trace.  On replay the device
+ * memory those internal kernels were supposed to populate stays at its
+ * prior value (typically zero from the initial memset of the workspace
+ * pool), so the next MIGraphX kernel reads zeros for its input and emits
+ * a constant or zero output — which is exactly the "got=0, exp=2.179"
+ * verification mismatch we were chasing.  Windows doesn't ship MIOpen so
+ * this path is Linux-specific.
+ *
+ * Same arg-recording path as hipModuleLaunchKernel — only the dispatch
+ * function differs.  The cooperative variant has no `extra` parameter. */
+hipError_t hipModuleLaunchCooperativeKernel(hipFunction_t f,
+    unsigned int gridDimX, unsigned int gridDimY, unsigned int gridDimZ,
+    unsigned int blockDimX, unsigned int blockDimY, unsigned int blockDimZ,
+    unsigned int sharedMemBytes, hipStream_t hStream,
+    void** kernelParams) {
+  LOAD_SYM(hipModuleLaunchCooperativeKernel);
+  try_register_device_ops();
+
+  if (!real_hipModuleLaunchCooperativeKernel) return -1;
+  int ret = real_hipModuleLaunchCooperativeKernel(f,
+      gridDimX, gridDimY, gridDimZ,
+      blockDimX, blockDimY, blockDimZ,
+      sharedMemBytes, hStream, kernelParams);
+
+  if (hrr_writer_enabled()) {
+    const char* kname = hrr_lookup_function_name(f);
+    uint64_t co_lo = 0, co_hi = 0;
+    hrr_lookup_function_co_hash(f, &co_lo, &co_hi);
+    hrr_record_kernel_launch(kname, co_lo, co_hi,
+                             gridDimX, gridDimY, gridDimZ,
+                             blockDimX, blockDimY, blockDimZ,
+                             sharedMemBytes, hStream, kernelParams);
+  }
+
+  return ret;
+}
+
+/* Note: hipLaunchKernel (<<<>>> / hipLaunchKernelGGL path) is handled in
+ * hrr_interposer_cxx.cpp because its ABI uses dim3 (a C++ struct).  The
+ * C interposer here covers the C-linkage launch entry points that MIGraphX
+ * and the ROCm libraries it links use most heavily. */
 
 hipError_t hipDeviceSynchronize(void) {
   LOAD_SYM(hipDeviceSynchronize);
@@ -472,3 +732,9 @@ __attribute__((destructor))
 static void hrr_lib_fini(void) {
   hrr_writer_shutdown();
 }
+
+/* Bind every interposed symbol to the same version libamdhip64 exports.
+ * Without this, callers linked against e.g. hipModuleLaunchKernel@hip_4.2
+ * resolve directly to libamdhip64 and skip our hooks (LD_PRELOAD only
+ * intercepts unversioned references). */
+#include "hrr_symver.h"

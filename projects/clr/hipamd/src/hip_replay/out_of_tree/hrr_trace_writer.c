@@ -579,7 +579,8 @@ void hrr_writer_shutdown(void) {
 
 int hrr_writer_enabled(void) { return g.active; }
 
-void hrr_record_malloc(const void* ptr, size_t size, unsigned int flags) {
+static void hrr_record_alloc_internal(const void* ptr, size_t size,
+                                      unsigned int flags, int zero_init) {
   if (!g.active) return;
   /* Use the actual GPU pointer value as the allocation handle.
    * This allows the replay's range-based translate_ptr to find sub-allocations
@@ -599,8 +600,11 @@ void hrr_record_malloc(const void* ptr, size_t size, unsigned int flags) {
    * that here, --verify will compare arena garbage on the recorder against
    * zeros on the replayer and report wholesale false-positive mismatches.
    * Skip the zero-init in non-full modes to avoid changing observable
-   * behaviour for capture sessions that don't snapshot outputs. */
-  if (g.mode == 2 && ptr && size > 0 && g.memset_fn) {
+   * behaviour for capture sessions that don't snapshot outputs.
+   * Skip also for host-mapped allocations — hipMemset on a host pointer
+   * would clobber data the host has either already filled or is about to
+   * fill, and the readback path captures inputs explicitly. */
+  if (zero_init && g.mode == 2 && ptr && size > 0 && g.memset_fn) {
     (void)g.memset_fn((void*)(uintptr_t)ptr, 0, size);
   }
 
@@ -608,6 +612,56 @@ void hrr_record_malloc(const void* ptr, size_t size, unsigned int flags) {
   struct { uint64_t h; uint64_t s; uint32_t f; } pl = {handle, size, flags};
 #pragma pack(pop)
   write_event(EVT_MALLOC, 0, &pl, sizeof(pl));
+}
+
+void hrr_record_malloc(const void* ptr, size_t size, unsigned int flags) {
+  hrr_record_alloc_internal(ptr, size, flags, /*zero_init=*/1);
+}
+
+void hrr_record_host_alloc(const void* ptr, size_t size, unsigned int flags) {
+  hrr_record_alloc_internal(ptr, size, flags, /*zero_init=*/0);
+}
+
+void hrr_record_external_launch_state(void) {
+  if (!g.active || !g.device_sync || !g.memcpy_fn) return;
+
+  /* Ensure the kernel has finished before we read GPU state. */
+  g.device_sync();
+
+  /* Snapshot every tracked allocation as an H2D blob.  We can't tell which
+   * one(s) the untracked kernel actually wrote without parsing its args, so
+   * we cover all of them; the resulting MEMCPY events on replay will simply
+   * overwrite each live allocation with its post-launch bytes.  Bounded by
+   * HRR_MAX_BLOB_MB. */
+  int n;
+  HRR_MUTEX_LOCK(&g.mu);
+  n = g.num_allocs;
+  HRR_MUTEX_UNLOCK(&g.mu);
+
+  for (int i = 0; i < n; i++) {
+    uintptr_t base;
+    size_t    sz;
+    HRR_MUTEX_LOCK(&g.mu);
+    if (i >= g.num_allocs) { HRR_MUTEX_UNLOCK(&g.mu); break; }
+    base = g.allocs[i].ptr;
+    sz   = g.allocs[i].size;
+    HRR_MUTEX_UNLOCK(&g.mu);
+    if (sz == 0) continue;
+    if (g.max_blob_mb > 0 && sz > g.max_blob_mb * 1024 * 1024) continue;
+
+    void* cpu_buf = malloc(sz);
+    if (!cpu_buf) continue;
+
+    int err = g.memcpy_fn(cpu_buf, (const void*)base, sz, 2 /* D2H */);
+    if (err != 0) { free(cpu_buf); continue; }
+
+    /* Emit an H2D MEMCPY whose dst is the allocation address — the replay
+     * translates dst via translate_ptr(dst_addr), so it lands on the live
+     * replica of this allocation. */
+    hrr_record_memcpy((void*)base, cpu_buf, sz,
+                      1 /* hipMemcpyHostToDevice */, NULL);
+    free(cpu_buf);
+  }
 }
 
 void hrr_record_free(const void* ptr) {

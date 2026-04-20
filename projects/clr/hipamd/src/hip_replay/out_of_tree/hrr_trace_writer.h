@@ -30,6 +30,24 @@ int hrr_writer_enabled(void);
 /* Record a malloc event */
 void hrr_record_malloc(const void* ptr, size_t size, unsigned int flags);
 
+/* Record a "host-mapped" allocation (hipHostMalloc / hipHostRegister
+ * + hipHostGetDevicePointer).  Behaves like hrr_record_malloc but does NOT
+ * zero-init the buffer in full mode — the buffer either already contains
+ * meaningful host data (Register) or is about to be filled by the host
+ * (HostMalloc), and a hipMemset on the mapped address would clobber it. */
+void hrr_record_host_alloc(const void* ptr, size_t size, unsigned int flags);
+
+/* Snapshot the post-launch state of every tracked device allocation as a
+ * sequence of synthetic H2D MEMCPY events.  Used by interposers that catch a
+ * kernel launch path the replayer cannot reproduce (e.g. hipLaunchKernel,
+ * which dispatches via a host-side stub address that's only meaningful to
+ * the original process's fat binary).  Replaying the resulting MEMCPYs
+ * restores the device memory state without needing to re-execute the
+ * untracked kernel.  Caller MUST call the real kernel launch BEFORE this
+ * function so the GPU work is queued.  No-op if writer is inactive or
+ * device ops haven't been registered. */
+void hrr_record_external_launch_state(void);
+
 /* Record a free event */
 void hrr_record_free(const void* ptr);
 

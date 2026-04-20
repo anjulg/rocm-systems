@@ -158,6 +158,117 @@ else()
   set_target_properties(hrr_record PROPERTIES
     OUTPUT_NAME "hrr_record"
     PREFIX "lib")
+
+  # ---------------------------------------------------------------------------
+  # Auto-generate hrr_symver.h + hrr_record.ver from the actual
+  # libamdhip64.so on this build host.
+  #
+  # libamdhip64 exports its public API as VERSIONED symbols
+  # (hipMalloc@hip_4.2, hipModuleLaunchCooperativeKernel@hip_5.5, ...).
+  # An LD_PRELOAD library that exports only the unversioned name is
+  # silently bypassed by the dynamic linker — calls fall through to
+  # libamdhip64 and skip our recorder.  We therefore have to emit a
+  # .symver alias for every intercepted API at the EXACT version the
+  # local libamdhip64 ships.
+  #
+  # Hardcoding versions in source worked but would break if a future
+  # ROCm release republished an existing symbol at a new node (analogous
+  # to glibc's memcpy@GLIBC_2.14 ABI break).  Generating from the real
+  # library means we always match whatever ROCm is installed.
+  #
+  # Override location of the source library with -DHRR_HIP_LIB=/path
+  # if the auto-discovery picks the wrong one (e.g. multiple ROCm
+  # installs side by side).
+  # ---------------------------------------------------------------------------
+  set(HRR_HIP_LIB "" CACHE FILEPATH
+      "Path to libamdhip64.so used to extract symbol versions for the LD_PRELOAD interposer (auto-detected if empty)")
+
+  if(NOT HRR_HIP_LIB)
+    # Try to resolve the actual library file behind the hip::host
+    # imported target.  IMPORTED_LOCATION may be unset for hip::host
+    # itself (it's an INTERFACE target on some ROCm builds), so walk
+    # the link interface looking for a libamdhip64*.so file.
+    find_package(hip QUIET)
+    if(TARGET hip::host)
+      get_target_property(_hip_lib hip::host IMPORTED_LOCATION)
+      if(NOT _hip_lib)
+        get_target_property(_hip_link hip::host INTERFACE_LINK_LIBRARIES)
+        foreach(_l ${_hip_link})
+          if(_l MATCHES "libamdhip64")
+            set(_hip_lib "${_l}")
+            break()
+          endif()
+        endforeach()
+      endif()
+      if(_hip_lib AND EXISTS "${_hip_lib}")
+        set(HRR_HIP_LIB "${_hip_lib}")
+      endif()
+    endif()
+  endif()
+
+  # Final fallback: probe the conventional install path so the build
+  # still works in environments where hip-config.cmake isn't installed.
+  if(NOT HRR_HIP_LIB)
+    foreach(_candidate
+        "$ENV{ROCM_PATH}/lib/libamdhip64.so"
+        "/opt/rocm/lib/libamdhip64.so"
+        "/opt/rocm/lib/libamdhip64.so.7")
+      if(EXISTS "${_candidate}")
+        set(HRR_HIP_LIB "${_candidate}")
+        break()
+      endif()
+    endforeach()
+  endif()
+
+  if(NOT HRR_HIP_LIB)
+    message(FATAL_ERROR
+      "[HRR] could not locate libamdhip64.so to extract symbol versions.\n"
+      "      Pass -DHRR_HIP_LIB=/path/to/libamdhip64.so to cmake, or set\n"
+      "      ROCM_PATH so /opt/rocm/lib/libamdhip64.so resolves.")
+  endif()
+
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+  set(_hrr_symver_h    "${CMAKE_CURRENT_BINARY_DIR}/hrr_symver.h")
+  set(_hrr_verscript   "${CMAKE_CURRENT_BINARY_DIR}/hrr_record.ver")
+  set(_hrr_gen_script  "${CMAKE_CURRENT_SOURCE_DIR}/gen_symver.py")
+
+  # Run at configure time so the generated header is available for
+  # the C/C++ compile.  CONFIGURE_DEPENDS re-runs the generator if
+  # the script or the underlying libamdhip64 changes (catches ROCm
+  # upgrades that would shift symbol versions).
+  execute_process(
+    COMMAND "${Python3_EXECUTABLE}" "${_hrr_gen_script}"
+            "${HRR_HIP_LIB}"
+            --out-header    "${_hrr_symver_h}"
+            --out-verscript "${_hrr_verscript}"
+    RESULT_VARIABLE _gen_result
+    OUTPUT_VARIABLE _gen_output
+    ERROR_VARIABLE  _gen_output
+  )
+  if(NOT _gen_result EQUAL 0)
+    message(FATAL_ERROR "[HRR] gen_symver.py failed (exit ${_gen_result}):\n${_gen_output}")
+  endif()
+  message(STATUS "[HRR] Generated symbol-version table from ${HRR_HIP_LIB}")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${_hrr_gen_script}"
+    "${HRR_HIP_LIB}"
+  )
+
+  # Generated header lives in the build dir; expose it on the include
+  # path for both the C and C++ TUs that make up libhrr_record.
+  target_include_directories(hrr_record PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+
+  # Pass the generated version script so .symver directives in
+  # hrr_symver.h can attach versioned aliases to our exported
+  # functions.  Without this, callers linked against versioned HIP
+  # references bind straight to libamdhip64 and skip our LD_PRELOAD
+  # interception, leaving MIOpen/MIGraphX kernel launches and memsets
+  # out of the trace.
+  target_link_options(hrr_record PRIVATE
+    "LINKER:--version-script=${_hrr_verscript}")
+  set_property(TARGET hrr_record APPEND PROPERTY LINK_DEPENDS
+    "${_hrr_verscript}")
 endif()
 
 # --- Tools (require HIP + shared sources in parent directory) ---

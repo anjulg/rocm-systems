@@ -607,6 +607,20 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
             // (atol + rtol * max_expected_abs) before declaring failure.
             bool exact = (cmp_len == expected.size() &&
                           memcmp(actual.data(), expected.data(), cmp_len) == 0);
+            if (getenv("HRR_VERIFY_TRACE")) {
+              const float* af = reinterpret_cast<const float*>(actual.data());
+              const float* ef = reinterpret_cast<const float*>(expected.data());
+              fprintf(stderr,
+                      "[VTRACE] kernel '%s' snap handle=0x%llx len=%zu "
+                      "exp[0..3]=%.4g,%.4g,%.4g,%.4g got[0..3]=%.4g,%.4g,%.4g,%.4g %s\n",
+                      kl.kernel_name.c_str(), (unsigned long long)snap.ptr_handle,
+                      cmp_len,
+                      cmp_len>=16?ef[0]:0.f, cmp_len>=16?ef[1]:0.f,
+                      cmp_len>=16?ef[2]:0.f, cmp_len>=16?ef[3]:0.f,
+                      cmp_len>=16?af[0]:0.f, cmp_len>=16?af[1]:0.f,
+                      cmp_len>=16?af[2]:0.f, cmp_len>=16?af[3]:0.f,
+                      exact ? "EXACT" : "diff");
+            }
             if (exact) {
               state.verify_pass++;
             } else {
@@ -636,13 +650,25 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
                 }
               } else {
                 state.verify_fail++;
+                /* Find first differing element for context. */
+                size_t first_bad = 0;
+                for (size_t i = 0; i < num_f32; i++) {
+                  if (std::fabs(a[i] - e[i]) > threshold) { first_bad = i; break; }
+                }
                 fprintf(stderr,
                         "[HRR] MISMATCH kernel '%s' output buffer "
                         "(handle=0x%llx, max_diff=%.6g, threshold=%.6g, "
-                        "max|expected|=%.6g)\n",
+                        "max|expected|=%.6g, len=%zu, first_bad=%zu, "
+                        "exp[0..3]=%.4g,%.4g,%.4g,%.4g, "
+                        "got[0..3]=%.4g,%.4g,%.4g,%.4g)\n",
                         kl.kernel_name.c_str(),
                         (unsigned long long)snap.ptr_handle,
-                        max_diff, threshold, max_abs_exp);
+                        max_diff, threshold, max_abs_exp,
+                        cmp_len, first_bad,
+                        num_f32 > 0 ? e[0] : 0.f, num_f32 > 1 ? e[1] : 0.f,
+                        num_f32 > 2 ? e[2] : 0.f, num_f32 > 3 ? e[3] : 0.f,
+                        num_f32 > 0 ? a[0] : 0.f, num_f32 > 1 ? a[1] : 0.f,
+                        num_f32 > 2 ? a[2] : 0.f, num_f32 > 3 ? a[3] : 0.f);
               }
             }
           }
