@@ -15,6 +15,33 @@
 #include <string>
 #include <chrono>
 
+enum class PrintDtype { fp32, fp16 };
+
+static float half_to_float(uint16_t h) {
+  uint32_t sign = (uint32_t)(h >> 15) << 31;
+  uint32_t exp  = (h >> 10) & 0x1f;
+  uint32_t mant = h & 0x3ff;
+  uint32_t f;
+  if (exp == 0) {
+    if (mant == 0) {
+      f = sign;
+    } else {
+      // Denormal: normalize
+      exp = 1;
+      while (!(mant & 0x400)) { mant <<= 1; exp--; }
+      mant &= 0x3ff;
+      f = sign | ((exp + 127 - 15) << 23) | (mant << 13);
+    }
+  } else if (exp == 31) {
+    f = sign | 0x7f800000 | (mant << 13);
+  } else {
+    f = sign | ((exp + 127 - 15) << 23) | (mant << 13);
+  }
+  float result;
+  memcpy(&result, &f, sizeof(result));
+  return result;
+}
+
 // Most-recently-launched kernel info, used to attribute deferred GPU
 // errors (e.g. illegal-memory-access page faults that don't surface until
 // the next driver call after the faulty launch).
@@ -81,6 +108,8 @@ struct ReplayState {
   // caused them (instead of at some unrelated later driver call) is
   // worth the per-kernel sync cost.  Disable with --async if needed.
   bool sync_after_launch = true;
+  bool print_outputs = false;
+  PrintDtype print_dtype = PrintDtype::fp32;
   bool verbose = false;
   std::string kernel_filter;
   std::string params_file;
@@ -602,6 +631,41 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
             hipMemcpy(actual.data(), src, cmp_len,
                       hipMemcpyDeviceToHost);
 
+            if (state.print_outputs) {
+              size_t elem_size = (state.print_dtype == PrintDtype::fp16) ? 2 : 4;
+              size_t n = std::min<size_t>(8, cmp_len / elem_size);
+              fprintf(stderr,
+                      "\n[HRR] OUT kernel='%s' ev=%llu handle=0x%llx len=%zu\n"
+                      "[HRR]   expected:",
+                      kl.kernel_name.c_str(),
+                      (unsigned long long)ev.header.sequence_id,
+                      (unsigned long long)snap.ptr_handle, cmp_len);
+              for (size_t i = 0; i < n; i++) {
+                float v;
+                if (state.print_dtype == PrintDtype::fp16) {
+                  uint16_t h;
+                  memcpy(&h, expected.data() + i * 2, 2);
+                  v = half_to_float(h);
+                } else {
+                  memcpy(&v, expected.data() + i * 4, 4);
+                }
+                fprintf(stderr, " %.6g", v);
+              }
+              fprintf(stderr, "\n[HRR]   actual:  ");
+              for (size_t i = 0; i < n; i++) {
+                float v;
+                if (state.print_dtype == PrintDtype::fp16) {
+                  uint16_t h;
+                  memcpy(&h, actual.data() + i * 2, 2);
+                  v = half_to_float(h);
+                } else {
+                  memcpy(&v, actual.data() + i * 4, 4);
+                }
+                fprintf(stderr, " %.6g", v);
+              }
+              fprintf(stderr, "\n");
+            }
+
             // Compute element-wise FP32 diff statistics.  Bit-exact match
             // is the easy case; otherwise we apply a tolerance check
             // (atol + rtol * max_expected_abs) before declaring failure.
@@ -710,6 +774,9 @@ static void print_usage(const char* argv0) {
     "  --params FILE       Load run_params.json to override kernel grid/block/\n"
     "                      shared_mem, scalar args, alloc sizes, and memcpy data\n"
     "  --skip-device-sync  Skip all recorded device/stream sync events\n"
+    "  --print-outputs     Print first 8 elements of each output buffer\n"
+    "                      (expected vs actual). Implies --verify.\n"
+    "  --print-dtype TYPE  Element type for --print-outputs: fp32 (default), fp16\n"
     "  --async             Do NOT sync after every kernel launch (default is\n"
     "                      to sync so faults are attributed to the right kernel)\n"
     "  --sync-after-launch Deprecated; per-kernel sync is now the default\n"
@@ -742,6 +809,17 @@ int main(int argc, char** argv) {
       state.sync_after_launch = true;  // now the default; kept for compat
     } else if (strcmp(argv[i], "--async") == 0) {
       state.sync_after_launch = false;
+    } else if (strcmp(argv[i], "--print-outputs") == 0) {
+      state.print_outputs = true;
+      state.verify = true;
+    } else if (strcmp(argv[i], "--print-dtype") == 0 && i + 1 < argc) {
+      const char* dt = argv[++i];
+      if (strcmp(dt, "fp16") == 0) state.print_dtype = PrintDtype::fp16;
+      else if (strcmp(dt, "fp32") == 0) state.print_dtype = PrintDtype::fp32;
+      else {
+        fprintf(stderr, "[HRR] Unknown dtype '%s' (supported: fp16, fp32)\n", dt);
+        return 1;
+      }
     } else if (strcmp(argv[i], "--verbose") == 0) {
       state.verbose = true;
     } else if (strcmp(argv[i], "--kernel-filter") == 0 && i + 1 < argc) {
