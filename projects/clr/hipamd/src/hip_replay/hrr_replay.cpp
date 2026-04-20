@@ -108,7 +108,6 @@ struct ReplayState {
   // caused them (instead of at some unrelated later driver call) is
   // worth the per-kernel sync cost.  Disable with --async if needed.
   bool sync_after_launch = true;
-  bool print_outputs = false;
   PrintDtype print_dtype = PrintDtype::fp32;
   bool verbose = false;
   std::string kernel_filter;
@@ -612,8 +611,13 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
         }
       }
 
-      // Verify output buffers if requested
-      if (state.verify) {
+      // HRR_VERIFY_TRACE levels: 0=off, 1=compact 4-element trace,
+      // 2=detailed 8-element dump (dtype-aware via --print-dtype).
+      const char* vt_env = getenv("HRR_VERIFY_TRACE");
+      int trace_level = vt_env ? atoi(vt_env) : 0;
+
+      // Verify output buffers and/or dump trace output
+      if (state.verify || trace_level > 0) {
         hipDeviceSynchronize();
         for (const auto& snap : kl.snapshots) {
           if (snap.direction == 1) {  // output
@@ -631,7 +635,23 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
             hipMemcpy(actual.data(), src, cmp_len,
                       hipMemcpyDeviceToHost);
 
-            if (state.print_outputs) {
+            bool exact = (cmp_len == expected.size() &&
+                          memcmp(actual.data(), expected.data(), cmp_len) == 0);
+
+            if (trace_level == 1) {
+              const float* af = reinterpret_cast<const float*>(actual.data());
+              const float* ef = reinterpret_cast<const float*>(expected.data());
+              fprintf(stderr,
+                      "[VTRACE] kernel '%s' snap handle=0x%llx len=%zu "
+                      "exp[0..3]=%.4g,%.4g,%.4g,%.4g got[0..3]=%.4g,%.4g,%.4g,%.4g %s\n",
+                      kl.kernel_name.c_str(), (unsigned long long)snap.ptr_handle,
+                      cmp_len,
+                      cmp_len>=16?ef[0]:0.f, cmp_len>=16?ef[1]:0.f,
+                      cmp_len>=16?ef[2]:0.f, cmp_len>=16?ef[3]:0.f,
+                      cmp_len>=16?af[0]:0.f, cmp_len>=16?af[1]:0.f,
+                      cmp_len>=16?af[2]:0.f, cmp_len>=16?af[3]:0.f,
+                      exact ? "EXACT" : "diff");
+            } else if (trace_level >= 2) {
               size_t elem_size = (state.print_dtype == PrintDtype::fp16) ? 2 : 4;
               size_t n = std::min<size_t>(8, cmp_len / elem_size);
               fprintf(stderr,
@@ -666,73 +686,56 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
               fprintf(stderr, "\n");
             }
 
-            // Compute element-wise FP32 diff statistics.  Bit-exact match
-            // is the easy case; otherwise we apply a tolerance check
-            // (atol + rtol * max_expected_abs) before declaring failure.
-            bool exact = (cmp_len == expected.size() &&
-                          memcmp(actual.data(), expected.data(), cmp_len) == 0);
-            if (getenv("HRR_VERIFY_TRACE")) {
-              const float* af = reinterpret_cast<const float*>(actual.data());
-              const float* ef = reinterpret_cast<const float*>(expected.data());
-              fprintf(stderr,
-                      "[VTRACE] kernel '%s' snap handle=0x%llx len=%zu "
-                      "exp[0..3]=%.4g,%.4g,%.4g,%.4g got[0..3]=%.4g,%.4g,%.4g,%.4g %s\n",
-                      kl.kernel_name.c_str(), (unsigned long long)snap.ptr_handle,
-                      cmp_len,
-                      cmp_len>=16?ef[0]:0.f, cmp_len>=16?ef[1]:0.f,
-                      cmp_len>=16?ef[2]:0.f, cmp_len>=16?ef[3]:0.f,
-                      cmp_len>=16?af[0]:0.f, cmp_len>=16?af[1]:0.f,
-                      cmp_len>=16?af[2]:0.f, cmp_len>=16?af[3]:0.f,
-                      exact ? "EXACT" : "diff");
-            }
-            if (exact) {
-              state.verify_pass++;
-            } else {
-              size_t num_f32 = cmp_len / 4;
-              float max_diff = 0.0f;
-              float max_abs_exp = 0.0f;
-              const float* a = reinterpret_cast<const float*>(actual.data());
-              const float* e = reinterpret_cast<const float*>(expected.data());
-              for (size_t i = 0; i < num_f32; i++) {
-                float d = std::fabs(a[i] - e[i]);
-                if (d > max_diff) max_diff = d;
-                float ae = std::fabs(e[i]);
-                if (ae > max_abs_exp) max_abs_exp = ae;
-              }
-              float threshold = state.verify_atol +
-                                state.verify_rtol * max_abs_exp;
-              if (cmp_len == expected.size() &&
-                  std::isfinite(max_diff) && max_diff <= threshold) {
+            // Verify pass/fail only when --verify is active
+            if (state.verify) {
+              if (exact) {
                 state.verify_pass++;
-                if (state.verbose && max_diff > 0.0f) {
+              } else {
+                size_t num_f32 = cmp_len / 4;
+                float max_diff = 0.0f;
+                float max_abs_exp = 0.0f;
+                const float* a = reinterpret_cast<const float*>(actual.data());
+                const float* e = reinterpret_cast<const float*>(expected.data());
+                for (size_t i = 0; i < num_f32; i++) {
+                  float d = std::fabs(a[i] - e[i]);
+                  if (d > max_diff) max_diff = d;
+                  float ae = std::fabs(e[i]);
+                  if (ae > max_abs_exp) max_abs_exp = ae;
+                }
+                float threshold = state.verify_atol +
+                                  state.verify_rtol * max_abs_exp;
+                if (cmp_len == expected.size() &&
+                    std::isfinite(max_diff) && max_diff <= threshold) {
+                  state.verify_pass++;
+                  if (state.verbose && max_diff > 0.0f) {
+                    fprintf(stderr,
+                            "[HRR] near-match kernel '%s' (handle=0x%llx, "
+                            "max_diff=%.6g, threshold=%.6g)\n",
+                            kl.kernel_name.c_str(),
+                            (unsigned long long)snap.ptr_handle,
+                            max_diff, threshold);
+                  }
+                } else {
+                  state.verify_fail++;
+                  size_t first_bad = 0;
+                  for (size_t i = 0; i < num_f32; i++) {
+                    if (std::fabs(a[i] - e[i]) > threshold) { first_bad = i; break; }
+                  }
                   fprintf(stderr,
-                          "[HRR] near-match kernel '%s' (handle=0x%llx, "
-                          "max_diff=%.6g, threshold=%.6g)\n",
+                          "[HRR] MISMATCH kernel '%s' output buffer "
+                          "(handle=0x%llx, max_diff=%.6g, threshold=%.6g, "
+                          "max|expected|=%.6g, len=%zu, first_bad=%zu, "
+                          "exp[0..3]=%.4g,%.4g,%.4g,%.4g, "
+                          "got[0..3]=%.4g,%.4g,%.4g,%.4g)\n",
                           kl.kernel_name.c_str(),
                           (unsigned long long)snap.ptr_handle,
-                          max_diff, threshold);
+                          max_diff, threshold, max_abs_exp,
+                          cmp_len, first_bad,
+                          num_f32 > 0 ? e[0] : 0.f, num_f32 > 1 ? e[1] : 0.f,
+                          num_f32 > 2 ? e[2] : 0.f, num_f32 > 3 ? e[3] : 0.f,
+                          num_f32 > 0 ? a[0] : 0.f, num_f32 > 1 ? a[1] : 0.f,
+                          num_f32 > 2 ? a[2] : 0.f, num_f32 > 3 ? a[3] : 0.f);
                 }
-              } else {
-                state.verify_fail++;
-                /* Find first differing element for context. */
-                size_t first_bad = 0;
-                for (size_t i = 0; i < num_f32; i++) {
-                  if (std::fabs(a[i] - e[i]) > threshold) { first_bad = i; break; }
-                }
-                fprintf(stderr,
-                        "[HRR] MISMATCH kernel '%s' output buffer "
-                        "(handle=0x%llx, max_diff=%.6g, threshold=%.6g, "
-                        "max|expected|=%.6g, len=%zu, first_bad=%zu, "
-                        "exp[0..3]=%.4g,%.4g,%.4g,%.4g, "
-                        "got[0..3]=%.4g,%.4g,%.4g,%.4g)\n",
-                        kl.kernel_name.c_str(),
-                        (unsigned long long)snap.ptr_handle,
-                        max_diff, threshold, max_abs_exp,
-                        cmp_len, first_bad,
-                        num_f32 > 0 ? e[0] : 0.f, num_f32 > 1 ? e[1] : 0.f,
-                        num_f32 > 2 ? e[2] : 0.f, num_f32 > 3 ? e[3] : 0.f,
-                        num_f32 > 0 ? a[0] : 0.f, num_f32 > 1 ? a[1] : 0.f,
-                        num_f32 > 2 ? a[2] : 0.f, num_f32 > 3 ? a[3] : 0.f);
               }
             }
           }
@@ -767,21 +770,22 @@ static void print_usage(const char* argv0) {
     "\n"
     "Options:\n"
     "  --verify            Compare output buffers with recorded snapshots\n"
-    "  --verify-atol F     Absolute FP32 tolerance for --verify (default 1e-3)\n"
-    "  --verify-rtol F     Relative FP32 tolerance for --verify (default 1e-3)\n"
     "  --timing            Report per-kernel GPU timing\n"
     "  --kernel-filter STR Only replay kernels containing STR in name\n"
     "  --params FILE       Load run_params.json to override kernel grid/block/\n"
     "                      shared_mem, scalar args, alloc sizes, and memcpy data\n"
     "  --skip-device-sync  Skip all recorded device/stream sync events\n"
-    "  --print-outputs     Print first 8 elements of each output buffer\n"
-    "                      (expected vs actual). Implies --verify.\n"
-    "  --print-dtype TYPE  Element type for --print-outputs: fp32 (default), fp16\n"
+    "  --print-dtype TYPE  Element type for HRR_VERIFY_TRACE=2: fp32 (default), fp16\n"
     "  --async             Do NOT sync after every kernel launch (default is\n"
     "                      to sync so faults are attributed to the right kernel)\n"
     "  --sync-after-launch Deprecated; per-kernel sync is now the default\n"
     "  --verbose           Print each event as it is processed\n"
-    "  --help              Show this help\n",
+    "  --help              Show this help\n"
+    "\n"
+    "Environment variables:\n"
+    "  HRR_VERIFY_TRACE=1  Compact 4-element FP32 trace per output snapshot\n"
+    "  HRR_VERIFY_TRACE=2  Detailed 8-element dump per output snapshot\n"
+    "                      (dtype selected by --print-dtype, default fp32)\n",
     argv0);
 }
 
@@ -797,10 +801,6 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--verify") == 0) {
       state.verify = true;
-    } else if (strcmp(argv[i], "--verify-atol") == 0 && i + 1 < argc) {
-      state.verify_atol = static_cast<float>(atof(argv[++i]));
-    } else if (strcmp(argv[i], "--verify-rtol") == 0 && i + 1 < argc) {
-      state.verify_rtol = static_cast<float>(atof(argv[++i]));
     } else if (strcmp(argv[i], "--timing") == 0) {
       state.timing = true;
     } else if (strcmp(argv[i], "--skip-device-sync") == 0) {
@@ -809,9 +809,6 @@ int main(int argc, char** argv) {
       state.sync_after_launch = true;  // now the default; kept for compat
     } else if (strcmp(argv[i], "--async") == 0) {
       state.sync_after_launch = false;
-    } else if (strcmp(argv[i], "--print-outputs") == 0) {
-      state.print_outputs = true;
-      state.verify = true;
     } else if (strcmp(argv[i], "--print-dtype") == 0 && i + 1 < argc) {
       const char* dt = argv[++i];
       if (strcmp(dt, "fp16") == 0) state.print_dtype = PrintDtype::fp16;
