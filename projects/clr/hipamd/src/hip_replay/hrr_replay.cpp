@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cmath>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <string>
 #include <chrono>
@@ -101,6 +102,18 @@ struct ReplayState {
   // within atol + rtol * max(|expected|).
   float verify_atol = 1e-3f;
   float verify_rtol = 1e-3f;
+  // Skip snapshots whose pre-launch buffer state already matches the
+  // recorded "expected" — those are read-only kernel args (Tensile A/B,
+  // bias, weights) that the writer can't tell apart from real outputs at
+  // record time.  Reduces verifier noise for kernels with many input
+  // pointers (GEMM, conv) without losing any real output check.
+  bool verify_outputs_only = false;
+  uint64_t verify_inputs_skipped = 0;
+  // Handles that were ever classified as real outputs (pre-launch state !=
+  // expected).  Once a handle is known to be a real output we never re-
+  // classify it as an input, even if a later launch finds it already
+  // holds the expected value (because the previous launch wrote it).
+  std::unordered_set<uint64_t> known_output_handles;
   bool timing = false;
   bool skip_device_sync = false;
   // Sync after every kernel launch by default.  Replay is a correctness
@@ -543,6 +556,53 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
         hipEventRecord(start);
       }
 
+      // Pre-launch classification of "is this snapshot a read-only input?"
+      // The writer snapshots every pointer arg post-launch because it has
+      // no metadata to distinguish reads from writes.  Here we read each
+      // snapshotted buffer BEFORE the kernel runs and compare to the
+      // recorded expected output: if they already match, the kernel
+      // can't possibly have written that data, so it's an input arg
+      // (e.g. GEMM A/B/bias) and we'll suppress it from the verify
+      // report and trace dump.  Active under --verify-outputs-only,
+      // independent of --verify, so dump-only sessions can also filter.
+      std::vector<bool> snap_is_input(kl.snapshots.size(), false);
+      if (state.verify_outputs_only) {
+        for (size_t si = 0; si < kl.snapshots.size(); si++) {
+          const auto& snap = kl.snapshots[si];
+          if (snap.direction != 1) continue;
+
+          // If this handle was already identified as a real output by an
+          // earlier launch (e.g. the same kernel run 10 times in a row),
+          // never reclassify it as an input.  Without this, from launch 2
+          // onward the output buffer already holds the correct result from
+          // the previous launch, so pre-launch == expected → falsely
+          // suppressed.
+          if (state.known_output_handles.count(snap.ptr_handle)) continue;
+
+          void* src = translate_ptr(state, snap.ptr_handle);
+          if (!src) continue;
+          std::vector<uint8_t> expected;
+          if (!hrr::read_blob(archive, snap.hash_lo, snap.hash_hi,
+                              expected)) continue;
+          size_t cmp_len = std::min((size_t)snap.length, expected.size());
+          if (cmp_len == 0) continue;
+          std::vector<uint8_t> pre(cmp_len);
+          if (hipMemcpy(pre.data(), src, cmp_len,
+                        hipMemcpyDeviceToHost) != hipSuccess) {
+            (void)hipGetLastError();
+            continue;
+          }
+          if (cmp_len == expected.size() &&
+              memcmp(pre.data(), expected.data(), cmp_len) == 0) {
+            snap_is_input[si] = true;
+            state.verify_inputs_skipped++;
+          } else {
+            // First time we see this handle as a real output — remember it.
+            state.known_output_handles.insert(snap.ptr_handle);
+          }
+        }
+      }
+
       g_last_async = {std::string("kernel '") + kl.kernel_name + "'",
                       ev.header.sequence_id};
       HIP_CHECK(hipModuleLaunchKernel(
@@ -619,8 +679,17 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
       // Verify output buffers and/or dump trace output
       if (state.verify || trace_level > 0) {
         hipDeviceSynchronize();
-        for (const auto& snap : kl.snapshots) {
+        for (size_t si = 0; si < kl.snapshots.size(); si++) {
+          const auto& snap = kl.snapshots[si];
           if (snap.direction == 1) {  // output
+            // --verify-outputs-only: drop snapshots classified as
+            // read-only inputs in the pre-launch sweep above.  Applies
+            // to both the verifier and the trace dump so the user
+            // doesn't have to pass --verify just to filter the dump.
+            if (state.verify_outputs_only &&
+                si < snap_is_input.size() && snap_is_input[si]) {
+              continue;
+            }
             void* src = translate_ptr(state, snap.ptr_handle);
             if (!src) continue;
 
@@ -770,6 +839,12 @@ static void print_usage(const char* argv0) {
     "\n"
     "Options:\n"
     "  --verify            Compare output buffers with recorded snapshots\n"
+    "  --verify-outputs-only\n"
+    "                      Suppress snapshots whose pre-launch buffer state\n"
+    "                      already matches the recorded blob.  Those are\n"
+    "                      read-only kernel inputs (Tensile A/B, bias,\n"
+    "                      weights) that the writer can't distinguish from\n"
+    "                      real outputs at record time.\n"
     "  --timing            Report per-kernel GPU timing\n"
     "  --kernel-filter STR Only replay kernels containing STR in name\n"
     "  --params FILE       Load run_params.json to override kernel grid/block/\n"
@@ -801,6 +876,8 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--verify") == 0) {
       state.verify = true;
+    } else if (strcmp(argv[i], "--verify-outputs-only") == 0) {
+      state.verify_outputs_only = true;
     } else if (strcmp(argv[i], "--timing") == 0) {
       state.timing = true;
     } else if (strcmp(argv[i], "--skip-device-sync") == 0) {
@@ -939,8 +1016,15 @@ int main(int argc, char** argv) {
   }
 
   if (state.verify) {
-    printf("[HRR] Verification: %zu passed, %zu failed\n",
-           state.verify_pass, state.verify_fail);
+    if (state.verify_outputs_only && state.verify_inputs_skipped > 0) {
+      printf("[HRR] Verification: %zu passed, %zu failed "
+             "(%zu read-only input snapshots suppressed)\n",
+             state.verify_pass, state.verify_fail,
+             (size_t)state.verify_inputs_skipped);
+    } else {
+      printf("[HRR] Verification: %zu passed, %zu failed\n",
+             state.verify_pass, state.verify_fail);
+    }
   }
 
   // Cleanup
