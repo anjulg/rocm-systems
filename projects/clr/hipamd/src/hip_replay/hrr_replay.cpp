@@ -109,6 +109,7 @@ struct ReplayState {
   // pointers (GEMM, conv) without losing any real output check.
   bool verify_outputs_only = false;
   uint64_t verify_inputs_skipped = 0;
+  bool fail_fast = false;  // stop at first verify mismatch (--fail-fast)
   // Handles that were ever classified as real outputs (pre-launch state !=
   // expected).  Once a handle is known to be a real output we never re-
   // classify it as an input, even if a later launch finds it already
@@ -790,20 +791,26 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
                   for (size_t i = 0; i < num_f32; i++) {
                     if (std::fabs(a[i] - e[i]) > threshold) { first_bad = i; break; }
                   }
+                  // Show 4 elements starting at first_bad so the user sees
+                  // the actual diverging values, not always the (often fine)
+                  // leading zeros.
+                  size_t d0 = first_bad;
+                  size_t d1 = (first_bad + 1 < num_f32) ? first_bad + 1 : first_bad;
+                  size_t d2 = (first_bad + 2 < num_f32) ? first_bad + 2 : first_bad;
+                  size_t d3 = (first_bad + 3 < num_f32) ? first_bad + 3 : first_bad;
                   fprintf(stderr,
                           "[HRR] MISMATCH kernel '%s' output buffer "
                           "(handle=0x%llx, max_diff=%.6g, threshold=%.6g, "
-                          "max|expected|=%.6g, len=%zu, first_bad=%zu, "
-                          "exp[0..3]=%.4g,%.4g,%.4g,%.4g, "
-                          "got[0..3]=%.4g,%.4g,%.4g,%.4g)\n",
+                          "max|expected|=%.6g, len=%zu, first_bad=%zu)\n"
+                          "[HRR]   exp[%zu..%zu]=%.4g,%.4g,%.4g,%.4g\n"
+                          "[HRR]   got[%zu..%zu]=%.4g,%.4g,%.4g,%.4g\n",
                           kl.kernel_name.c_str(),
                           (unsigned long long)snap.ptr_handle,
                           max_diff, threshold, max_abs_exp,
                           cmp_len, first_bad,
-                          num_f32 > 0 ? e[0] : 0.f, num_f32 > 1 ? e[1] : 0.f,
-                          num_f32 > 2 ? e[2] : 0.f, num_f32 > 3 ? e[3] : 0.f,
-                          num_f32 > 0 ? a[0] : 0.f, num_f32 > 1 ? a[1] : 0.f,
-                          num_f32 > 2 ? a[2] : 0.f, num_f32 > 3 ? a[3] : 0.f);
+                          d0, d3, e[d0], e[d1], e[d2], e[d3],
+                          d0, d3, a[d0], a[d1], a[d2], a[d3]);
+                  if (state.fail_fast) goto replay_done;
                 }
               }
             }
@@ -839,6 +846,8 @@ static void print_usage(const char* argv0) {
     "\n"
     "Options:\n"
     "  --verify            Compare output buffers with recorded snapshots\n"
+    "  --fail-fast         Stop replay at the first verification mismatch\n"
+    "                      (default: continue and report all mismatches)\n"
     "  --verify-outputs-only\n"
     "                      Suppress snapshots whose pre-launch buffer state\n"
     "                      already matches the recorded blob.  Those are\n"
@@ -876,6 +885,8 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--verify") == 0) {
       state.verify = true;
+    } else if (strcmp(argv[i], "--fail-fast") == 0) {
+      state.fail_fast = true;
     } else if (strcmp(argv[i], "--verify-outputs-only") == 0) {
       state.verify_outputs_only = true;
     } else if (strcmp(argv[i], "--timing") == 0) {
@@ -1003,6 +1014,7 @@ int main(int argc, char** argv) {
 
   hipDeviceSynchronize();
   auto wall_end = std::chrono::high_resolution_clock::now();
+  replay_done:
   double wall_ms = std::chrono::duration<double, std::milli>(
                        wall_end - wall_start).count();
 
