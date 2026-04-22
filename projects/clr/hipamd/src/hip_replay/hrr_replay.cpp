@@ -182,6 +182,13 @@ static hipModule_t get_module_for_co(ReplayState& state,
   return mod;
 }
 
+// Return codes from replay_event().
+// 0              : success, continue replay.
+// REPLAY_STOP_OK : --fail-fast triggered; replay should stop cleanly
+//                  (verification failed but no hard GPU error).
+// Any other value: hard error (hipError_t), replay must abort.
+static constexpr int REPLAY_STOP_OK = -1;
+
 static int replay_event(ReplayState& state, const hrr::Archive& archive,
                         const hrr::Event& ev) {
   switch (ev.header.event_type) {
@@ -810,7 +817,7 @@ static int replay_event(ReplayState& state, const hrr::Archive& archive,
                           cmp_len, first_bad,
                           d0, d3, e[d0], e[d1], e[d2], e[d3],
                           d0, d3, a[d0], a[d1], a[d2], a[d3]);
-                  if (state.fail_fast) goto replay_done;
+                  if (state.fail_fast) return REPLAY_STOP_OK;
                 }
               }
             }
@@ -998,6 +1005,7 @@ int main(int argc, char** argv) {
 
   // Replay events
   auto wall_start = std::chrono::high_resolution_clock::now();
+  auto wall_end   = wall_start;
 
   for (size_t i = 0; i < archive.events.size(); i++) {
     if (state.verbose) {
@@ -1005,6 +1013,10 @@ int main(int argc, char** argv) {
               i, hrr::event_type_name(archive.events[i].header.event_type));
     }
     int ret = replay_event(state, archive, archive.events[i]);
+    if (ret == REPLAY_STOP_OK) {
+      // --fail-fast: first verify mismatch hit; stop cleanly.
+      break;
+    }
     if (ret != 0) {
       fprintf(stderr, "[HRR] Replay failed at event %zu (%s)\n",
               i, hrr::event_type_name(archive.events[i].header.event_type));
@@ -1013,8 +1025,7 @@ int main(int argc, char** argv) {
   }
 
   hipDeviceSynchronize();
-  auto wall_end = std::chrono::high_resolution_clock::now();
-  replay_done:
+  wall_end = std::chrono::high_resolution_clock::now();
   double wall_ms = std::chrono::duration<double, std::milli>(
                        wall_end - wall_start).count();
 
