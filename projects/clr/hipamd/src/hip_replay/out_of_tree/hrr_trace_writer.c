@@ -84,8 +84,41 @@ static hash128_t hash_buffer(const void* data, size_t len) {
 
 /* ---- Global state ---- */
 
+#define HRR_STRINGIFY_INNER(x) #x
+#define HRR_STRINGIFY(x) HRR_STRINGIFY_INNER(x)
+
+/* Emit the "no metadata" warning.  Called when a kernel launch reaches the
+ * recorder but the code-object parse didn't produce arg metadata (either the
+ * module was never registered, or MAX_MODULES was hit and the entry was
+ * silently dropped). */
+#define HRR_WARN_NO_METADATA(kname) do { \
+  int _total = 0; \
+  for (int _mi = 0; _mi < g.num_modules; _mi++) _total += g.modules[_mi].num_kernels; \
+  fprintf(stderr, "[HRR] WARNING: no metadata for kernel '%s'\n" \
+          "[HRR]   0 args recorded (replay will fail). " \
+          "%d / %d modules registered, %d kernels parsed total.\n" \
+          "[HRR]   %s\n", \
+          (kname), g.num_modules, MAX_MODULES, _total, \
+          (g.num_modules >= MAX_MODULES) \
+            ? "Module table FULL (MAX_MODULES=" HRR_STRINGIFY(MAX_MODULES) \
+              "). Bump MAX_MODULES in hrr_trace_writer.c and rebuild." \
+            : "Set HRR_VERBOSE=1 and re-run to see per-module details."); \
+  if (g.verbose) { \
+    for (int _mi = 0; _mi < g.num_modules; _mi++) { \
+      fprintf(stderr, "[HRR]   module[%d]: handle=0x%llx %d kernels", \
+              _mi, (unsigned long long)g.modules[_mi].handle, \
+              g.modules[_mi].num_kernels); \
+      if (g.modules[_mi].num_kernels > 0) \
+        fprintf(stderr, " (first: '%.80s'%s)", \
+                g.modules[_mi].kernels[0].name, \
+                strlen(g.modules[_mi].kernels[0].name) > 80 ? "..." : ""); \
+      fprintf(stderr, "\n"); \
+    } \
+  } \
+} while (0)
+
 #define MAX_ALLOCS 65536
-#define MAX_MODULES 256
+#define MAX_MODULES 4096
 #define MAX_CO_KERNELS_INITIAL 1024
 /* Large enough to hold fat-binary registrations from all loaded HIP libraries
  * (rocBLAS alone contributes ~40 K entries via __hipRegisterFunction) plus
@@ -895,28 +928,7 @@ void hrr_record_kernel_launch(const char* kernel_name,
   uint16_t num_args = meta ? (uint16_t)meta->num_args : 0;
   uint16_t num_snaps = 0;
 
-  if (!meta && kernel_name) {
-    int total_kernels = 0;
-    for (int mi = 0; mi < g.num_modules; mi++)
-      total_kernels += g.modules[mi].num_kernels;
-    fprintf(stderr, "[HRR] WARNING: no metadata for kernel '%s'\n"
-            "[HRR]   0 args recorded (replay will fail). "
-            "%d modules registered, %d kernels parsed total.\n"
-            "[HRR]   Set HRR_VERBOSE=1 and re-run to see per-module details.\n",
-            kernel_name, g.num_modules, total_kernels);
-    if (g.verbose) {
-      for (int mi = 0; mi < g.num_modules; mi++) {
-        fprintf(stderr, "[HRR]   module[%d]: handle=0x%llx %d kernels",
-                mi, (unsigned long long)g.modules[mi].handle,
-                g.modules[mi].num_kernels);
-        if (g.modules[mi].num_kernels > 0)
-          fprintf(stderr, " (first: '%.80s'%s)",
-                  g.modules[mi].kernels[0].name,
-                  strlen(g.modules[mi].kernels[0].name) > 80 ? "..." : "");
-        fprintf(stderr, "\n");
-      }
-    }
-  }
+  if (!meta && kernel_name) HRR_WARN_NO_METADATA(kernel_name);
 
   /* Collect unique pointer-arg handles for output snapshot capture */
   uint64_t ptr_handles[MAX_SNAP_PTRS];
@@ -1076,28 +1088,7 @@ void hrr_record_kernel_launch_packed(const char* kernel_name,
   uint16_t num_args = meta ? (uint16_t)meta->num_args : 0;
   uint16_t num_snaps = 0;
 
-  if (!meta && kernel_name) {
-    int total_kernels = 0;
-    for (int mi = 0; mi < g.num_modules; mi++)
-      total_kernels += g.modules[mi].num_kernels;
-    fprintf(stderr, "[HRR] WARNING: no metadata for kernel '%s'\n"
-            "[HRR]   0 args recorded (replay will fail). "
-            "%d modules registered, %d kernels parsed total.\n"
-            "[HRR]   Set HRR_VERBOSE=1 and re-run to see per-module details.\n",
-            kernel_name, g.num_modules, total_kernels);
-    if (g.verbose) {
-      for (int mi = 0; mi < g.num_modules; mi++) {
-        fprintf(stderr, "[HRR]   module[%d]: handle=0x%llx %d kernels",
-                mi, (unsigned long long)g.modules[mi].handle,
-                g.modules[mi].num_kernels);
-        if (g.modules[mi].num_kernels > 0)
-          fprintf(stderr, " (first: '%.80s'%s)",
-                  g.modules[mi].kernels[0].name,
-                  strlen(g.modules[mi].kernels[0].name) > 80 ? "..." : "");
-        fprintf(stderr, "\n");
-      }
-    }
-  }
+  if (!meta && kernel_name) HRR_WARN_NO_METADATA(kernel_name);
 
   /* Collect unique pointer-arg handles for output snapshot capture */
   uint64_t ptr_handles[MAX_SNAP_PTRS];
