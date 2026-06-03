@@ -1633,7 +1633,7 @@ def lock_env(base_env: dict[str, str]) -> dict[str, str]:
         "ROCPROFSYS_COUT_OUTPUT": "ON",
         "ROCPROFSYS_TIME_OUTPUT": "OFF",
         "ROCPROFSYS_TIMELINE_PROFILE": "OFF",
-        "ROCPROFSYS_LOG_LEVEL": "trace",
+        "ROCPROFSYS_LOG_LEVEL": "info",
         "LD_LIBRARY_PATH": base_env.get("LD_LIBRARY_PATH", ""),
     }
 
@@ -2260,6 +2260,10 @@ def assert_perfetto(
     subtests, tests_dir, record_subtest_failure, request, test_output_dir
 ):
     """Fixture that returns an assert_perfetto function.
+
+    Trace validation kwargs (``categories``, ``labels``, ``counts``, ``depths``,
+    ``label_substrings``, etc.) are forwarded to
+    ``validate_perfetto_trace``; see that function's docstring.
 
     Args not from validate_perfetto_trace:
         subtest_name: Name shown in subtest output (defaults to "Perfetto validation")

@@ -111,8 +111,6 @@ inline constexpr uint64_t SHF_WRITE = 1u << 0;
 inline constexpr uint64_t SHF_ALLOC = 1u << 1;
 inline constexpr uint64_t SHF_EXECINSTR = 1u << 2;
 
-inline constexpr uint32_t PT_LOAD = 1;
-
 /// @brief AMDGPU vendor specific notes for Code Object V3.
 inline constexpr uint32_t NT_AMDGPU_METADATA = 32;
 
