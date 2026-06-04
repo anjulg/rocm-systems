@@ -20,7 +20,7 @@ class Device;
 class VirtualGPU;
 class Memory;
 
-class TimeStamp {
+class TimeStamp : public amd::HeapObject {
  public:
   //! Enums for the timestamp information
   //! \note *4 is the limitaiton of SDMA HW
@@ -83,7 +83,7 @@ class TimeStamp {
   volatile uint64_t* values_;  //!< CPU pointer to the timer values
 };
 
-class TimeStampCache {
+class TimeStampCache : public amd::HeapObject {
  public:
   //! Default constructor
   TimeStampCache(VirtualGPU& gpu  //!< Virtual GPU object

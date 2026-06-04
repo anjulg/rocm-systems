@@ -48,7 +48,6 @@ amd::Memory* Heap::FindMemory(size_t size, Stream* stream, bool opportunistic, v
       total_size_ -= memory->getSize();
       // Preserve event, since the logic could skip GPU wait on reuse
       ts->event_ = it->second.event_;
-      ts->refcount_ = it->second.refcount_;
       // Remove found allocation from the map
       it = allocations_.erase(it);
       break;
@@ -78,9 +77,6 @@ bool Heap::RemoveMemory(amd::Memory* memory, MemoryTimestamp* ts) {
 
 // ================================================================================================
 Heap::SortedMap::iterator Heap::EraseAllocation(Heap::SortedMap::iterator& it) {
-  if (it->second.refcount_ > 0) {
-    return ++it;
-  }
   auto memory = it->first.second;
   const device::Memory* dev_mem = memory->getDeviceMemory(*device_->devices()[0]);
   void* dev_mem_vaddr = reinterpret_cast<void*>(dev_mem->virtualAddress());
@@ -107,10 +103,6 @@ bool Heap::ReleaseAllMemory(size_t min_bytes_to_hold, bool safe_release) {
     if (total_size_ <= min_bytes_to_hold) {
       return true;
     }
-    if (it->second.refcount_ > 0) {
-      ++it;
-      continue;
-    }
     // Safe release forces unconditional wait for memory
     if (safe_release) {
       it->second.Wait();
@@ -135,10 +127,6 @@ bool Heap::ReleaseAllMemory() {
     // @note: Managed memory controls the threshold on its own
     if (!use_vm_heap_ && (total_size_ <= release_threshold_)) {
       return true;
-    }
-    if (it->second.refcount_ > 0) {
-      ++it;
-      continue;
     }
     if (it->second.IsSafeRelease()) {
       it = EraseAllocation(it);
@@ -242,7 +230,7 @@ void* MemoryPool::AllocateMemory(size_t size, Stream* stream, void* dptr) {
 }
 
 // ================================================================================================
-bool MemoryPool::FreeMemory(amd::Memory* memory, Stream* stream, Event* event, bool skip_event) {
+bool MemoryPool::FreeMemory(amd::Memory* memory, Stream* stream, Event* event) {
   {
     std::scoped_lock lock(lock_pool_ops_);
 
@@ -281,7 +269,7 @@ bool MemoryPool::FreeMemory(amd::Memory* memory, Stream* stream, Event* event, b
     }
     ClPrint(amd::LOG_INFO, amd::LOG_MEM_POOL, "Pool FreeMem: %p, %p", memory->getSvmPtr(), memory);
 
-    if (ts.refcount_ == 0 && memory->getUserData().vaddr_mem_obj != nullptr) {
+    if (memory->getUserData().vaddr_mem_obj != nullptr) {
       auto va_mem = memory->getUserData().vaddr_mem_obj;
       if (stream == nullptr) {
         stream = g_devices[memory->getUserData().deviceId]->NullStream();
@@ -297,17 +285,8 @@ bool MemoryPool::FreeMemory(amd::Memory* memory, Stream* stream, Event* event, b
       // The stream of destruction is a safe stream, because the app must handle sync
       ts.AddSafeStream(stream);
 
-      // Preserve any caller-provided completion event even when marker creation is
-      // skipped. A null event is reserved for the explicit host-safe free path below.
-      if (event != nullptr) {
-        // If event is provided, then use it to track memory availability
-        ts.SetEvent(event);
-      } else if (!skip_event) {
+      if (event == nullptr) {
         // Add a marker to the stream to trace availability of this memory
-        // Graph path: skip marker creation and blocking waits to avoid deadlocking
-        // the non-direct-dispatch queue thread. Markers enqueued during submit() land
-        // behind commands in the FIFO that depend on them, causing a deadlock.
-        // The safe stream added above is sufficient for reuse checks in FindMemory.
         Event* e = new hip::Event(0);
         if (hipSuccess == e->addMarker(stream, nullptr)) {
           ts.SetEvent(e);
@@ -315,9 +294,11 @@ bool MemoryPool::FreeMemory(amd::Memory* memory, Stream* stream, Event* event, b
           auto result = e->ready();
         }
       } else {
-        // Assume a safe release from hipFree() if stream is nullptr
-        ts.SetEvent(nullptr);
+        ts.SetEvent(event);
       }
+    } else {
+      // Assume a safe release from hipFree() if stream is nullptr
+      ts.SetEvent(nullptr);
     }
     free_heap_.AddMemory(memory, ts);
   }
@@ -442,9 +423,8 @@ hipError_t MemoryPool::GetAttribute(hipMemPoolAttr attr, void* value) {
           (state_.use_vm_heap_) ? MaxMappedSize() : max_total_size_;
       break;
     case hipMemPoolAttrUsedMemCurrent:
-      // Total currently used memory by the pool, including graph-cached entries in free_heap_
-      *reinterpret_cast<uint64_t*>(value) =
-          busy_heap_.GetTotalSize() + free_heap_.GetRefcountedSize();
+      // Total currently used memory by the pool
+      *reinterpret_cast<uint64_t*>(value) = busy_heap_.GetTotalSize();
       break;
     case hipMemPoolAttrUsedMemHigh:
       // High watermark of all used memoryS, since the last reset

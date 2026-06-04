@@ -17,7 +17,7 @@ class Kernel;
 class VirtualGPU;
 class Device;
 
-class PrintfDbg {
+class PrintfDbg : public amd::HeapObject {
  public:
   //! Debug buffer size per workitem
   static constexpr uint WorkitemDebugSize = 4096;

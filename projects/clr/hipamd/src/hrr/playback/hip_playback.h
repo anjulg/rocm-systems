@@ -78,6 +78,22 @@ struct PlaybackContext {
     bool sync_after_event  = false;  // hipDeviceSynchronize after EVERY dispatched event
     bool verbose           = false;
     bool validate_d2h      = false;  // perform D2H validation against captured expected data
+    // Per-kernel output validation against captured direction=1 snapshots
+    // (HIP_HRR_RECORD_MODE=full archives only).  When true, replay D2H-reads
+    // every output buffer after each kernel and memcmps against the
+    // expected blob.  Mismatches go to stderr and bump verify_fail.
+    bool verify            = false;
+    // Restore captured direction=0 snapshots before each kernel re-launch
+    // (HIP_HRR_RECORD_MODE=inputs|full archives).  Makes replay self-healing
+    // against any upstream non-determinism — the kernel always sees the
+    // exact input bytes it saw at capture time.  Default ON since restoring
+    // captured inputs is strictly more correct than relying on a fully
+    // deterministic replay of every preceding op.
+    bool restore_inputs    = true;
+    // Absolute tolerance for --verify byte-wise mismatch reporting.  When 0
+    // (default) we report any byte difference.  When >0 we treat element-
+    // wise abs-diff <= tol as a pass (no dtype awareness — bytewise only).
+    double verify_atol     = 0.0;
     std::string kernel_filter;
 
     // Set true between hipStreamBeginCapture and hipStreamEndCapture.
@@ -107,6 +123,15 @@ struct PlaybackContext {
     double              total_graph_ms   = 0.0;  // guarded by map_mutex when ctx.timing
     std::atomic<size_t> d2h_pass{0};
     std::atomic<size_t> d2h_fail{0};
+    // Per-kernel verify counters (HIP_HRR_RECORD_MODE=full archives + --verify).
+    // verify_pass / verify_fail count individual snapshot comparisons, not
+    // kernels — a single kernel with N output buffers contributes N events.
+    // verify_input_restored counts how many direction=0 snapshots replay
+    // actually applied (useful to tell "0 because archive lacks snapshots"
+    // apart from "many because we're paying for self-heal on every kernel").
+    std::atomic<size_t> verify_pass{0};
+    std::atomic<size_t> verify_fail{0};
+    std::atomic<size_t> verify_input_restored{0};
 
     // Timing events — one pair per replay thread, created on first kernel launch
     // and reused for every subsequent launch on that thread. Registered here so

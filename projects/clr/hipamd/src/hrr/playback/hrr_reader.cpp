@@ -83,9 +83,12 @@ const char* event_type_name(uint16_t type) {
 //   [+12..23] block[3] (uint32_t[3])
 //   [+24..27] shared_mem (uint32_t)
 //   [+28..29] num_args (uint16_t)
-//   [+30..31] num_snapshots (uint16_t, always 0)
+//   [+30..31] num_snapshots (uint16_t; 0 in timeline mode, >0 in inputs/full
+//                            captures — see HIP_HRR_RECORD_MODE)
 //   per arg: u8 value_kind, u16 size, <size> bytes data
-//   --- trailing (v3.1, optional — older archives stop after args) ---
+//   per snapshot: u64 ptr_handle, u64 offset, u64 length,
+//                 u64 hash_lo, u64 hash_hi, u8 direction (0=input, 1=output)
+//   --- trailing (v3.1, optional — older archives stop after args+snaps) ---
 //   u32  full_kbuf_size (0 = not captured; non-zero = extra[] launch)
 //   u8[] full_kbuf      (full_kbuf_size bytes; consumed by replayer, not by
 //                        this parser — silently ignored here)
@@ -138,7 +141,7 @@ static bool parse_kernel_launch(const uint8_t* data, size_t len,
     kl.args.push_back(std::move(arg));
   }
 
-  // buffer snapshots (always 0 in in-tree captures)
+  // Buffer snapshots — non-empty for HIP_HRR_RECORD_MODE=inputs|full captures.
   for (uint16_t i = 0; i < num_snapshots; i++) {
     if (p + 41 > end) return false;
     BufferSnapshot snap;
@@ -186,6 +189,9 @@ bool load_archive(const std::string& path, Archive& archive) {
 
   // Read events sequentially
   bool read_error = false;
+  uint64_t prev_seq = 0;
+  uint16_t prev_type = 0;
+  long file_offset = static_cast<long>(sizeof(hrr_file_header));
   while (true) {
     Event ev;
     // Read the header first to get payload_length, then read the rest into
@@ -198,6 +204,17 @@ bool load_archive(const std::string& path, Archive& archive) {
     if (total < hdr_size) {
       fprintf(stderr, "[HRR] Corrupt event: payload_length %u < header size %u\n",
               total, hdr_size);
+      fprintf(stderr, "[HRR]   file_offset=0x%lx  event_type=%u (%s)  seq=%llu\n",
+              file_offset, (unsigned)ev.header().event_type,
+              event_type_name(ev.header().event_type),
+              (unsigned long long)ev.header().sequence_id);
+      fprintf(stderr, "[HRR]   prev_seq=%llu  prev_event_type=%u (%s)\n",
+              (unsigned long long)prev_seq, (unsigned)prev_type,
+              event_type_name(prev_type));
+      fprintf(stderr, "[HRR]   header bytes:");
+      for (int _i = 0; _i < hdr_size; ++_i)
+        fprintf(stderr, " %02x", ev.raw_payload[_i]);
+      fprintf(stderr, "\n");
       read_error = true; break;
     }
     if (total > hdr_size) {
@@ -398,6 +415,9 @@ bool load_archive(const std::string& path, Archive& archive) {
 
     #undef AS
 
+    prev_seq  = ev.header().sequence_id;
+    prev_type = ev.header().event_type;
+    file_offset += total;
     archive.events.push_back(std::move(ev));
   }
 

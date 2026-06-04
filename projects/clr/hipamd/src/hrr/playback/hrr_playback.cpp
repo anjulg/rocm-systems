@@ -19,6 +19,10 @@
 //   --kernel-filter STR   Only launch kernels whose name contains STR
 //                         (full warm-up pass runs first to set up GPU state)
 //   --sync-after-launch   hipDeviceSynchronize() after every kernel (debug)
+//   --verify              Compare per-kernel output buffers against captured
+//                         direction=1 snapshots (HIP_HRR_RECORD_MODE=full).
+//   --no-restore-inputs   Do NOT restore captured direction=0 input buffers
+//                         before each launch (off by default — restore IS on).
 //   --help                Show this message
 //
 // Exit code: 0 = all D2H checks passed (or none present), 1 = any failure.
@@ -175,6 +179,51 @@ static void print_info(const hrr::Archive& archive, bool show_events) {
     }
     printf("\n");
   }
+}
+
+// ---------------------------------------------------------------------------
+// Benign non-success returns
+// ---------------------------------------------------------------------------
+// Some HIP APIs return non-hipSuccess codes as part of their normal contract,
+// not as failures: hipStreamQuery / hipEventQuery return hipErrorNotReady to
+// say "work still in flight" — that's the answer they exist to deliver, not
+// an error.  At replay time those events get scheduled the same way as the
+// original capture, but timing differs (cold caches, different driver state,
+// host load), so the query may flip between ready and not-ready relative to
+// the capture run.  Treating "not ready" as fatal here would abort replay on
+// any app that polls a stream while it's busy — which is most real workloads.
+// We accept the runtime's answer, log it at verbose level, and move on.
+//
+// hipEventElapsedTime / hipEventSynchronize returning hipErrorInvalidResourceHandle
+// (400): the event handle translated to nullptr because the event was created
+// before capture started (or was already destroyed before this call).  The
+// elapsed-time value is discarded during replay and synchronize is a no-op for a
+// missing event — treat as benign so replay continues.
+static bool is_benign_status(uint16_t etype, hipError_t r) {
+  if (r == hipErrorNotReady) {
+    switch (etype) {
+      case HRR_API_HIPSTREAMQUERY:
+      case HRR_API_HIPSTREAMQUERY_SPT:
+      case HRR_API_HIPEVENTQUERY:
+        return true;
+      default:
+        return false;
+    }
+  }
+  if (r == hipErrorInvalidResourceHandle) {
+    switch (etype) {
+      case HRR_API_HIPEVENTELAPSEDTIME:
+      case HRR_API_HIPEVENTSYNCHRONIZE:
+      // hipFuncGetAttribute/hipFuncGetAttributes are read-only metadata queries;
+      // they don't affect GPU state so a stale/missing function handle is benign.
+      case HRR_API_HIPFUNCGETATTRIBUTE:
+      case HRR_API_HIPFUNCGETATTRIBUTES:
+        return true;
+      default:
+        return false;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -383,6 +432,18 @@ static hipError_t dispatch_event(PlaybackContext& ctx, const hrr::Event& ev,
   hipError_t r = hrr_playback_dispatch[etype](ctx, ev.raw_payload.data());
 
   if (r != hipSuccess) {
+    if (is_benign_status(etype, r)) {
+      // Contract return (e.g. hipStreamQuery -> hipErrorNotReady).  Don't
+      // abort; clear the sticky error so the next genuine call to
+      // hipGetLastError isn't poisoned, and continue replaying.
+      (void)hipGetLastError();
+      if (log && ctx.verbose)
+        fprintf(stderr,
+                "[HRR] T%llu Event %zu (%s) returned %d (%s) — benign, continuing\n",
+                (unsigned long long)ev.header().thread_id, idx,
+                hrr::event_type_name(etype), r, hipGetErrorString(r));
+      return hipSuccess;
+    }
     ctx.fatal_error.store(true, std::memory_order_release);
     if (log)
       fprintf(stderr, "[HRR] Fatal: T%llu Event %zu (%s) returned %d (%s) — aborting replay\n",
@@ -394,7 +455,9 @@ static hipError_t dispatch_event(PlaybackContext& ctx, const hrr::Event& ev,
   // --sync-after-event: flush the GPU after every dispatched event and check
   // for async errors. This makes GPU faults show up at the exact causal event
   // rather than surfacing later on a sync or the next API call.
-  if (ctx.sync_after_event) {
+  // Skipped during stream capture: hipDeviceSynchronize is forbidden while a
+  // stream is in capture mode and would return 900 (hipErrorStreamCaptureUnsupported).
+  if (ctx.sync_after_event && !ctx.in_graph_capture) {
     hipError_t se = hipDeviceSynchronize();
     if (se == hipSuccess) se = hipGetLastError();
     if (se != hipSuccess) {
@@ -565,6 +628,10 @@ static void print_usage(const char* argv0) {
     "                        (silent full warm-up pass runs first)\n"
     "  --sync-after-launch   hipDeviceSynchronize after every kernel launch\n"
     "  --sync-after-event    hipDeviceSynchronize after EVERY event (slowest, most precise)\n"
+    "  --verify              Compare per-kernel output buffers against captured\n"
+    "                        direction=1 snapshots (HIP_HRR_RECORD_MODE=full).\n"
+    "  --no-restore-inputs   Skip restoring captured pre-launch input buffers\n"
+    "                        (default: input restore is ENABLED when snapshots present).\n"
     "  --help                Show this message\n"
     "\n"
     "Default mode: single-threaded, serialize GPU after pass, abort on first error.\n"
@@ -591,6 +658,8 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[i], "--timing"))            ctx.timing             = true;
     else if (!strcmp(argv[i], "--sync-after-launch")) ctx.sync_after_launch  = true;
     else if (!strcmp(argv[i], "--sync-after-event"))  ctx.sync_after_event   = true;
+    else if (!strcmp(argv[i], "--verify"))            ctx.verify             = true;
+    else if (!strcmp(argv[i], "--no-restore-inputs")) ctx.restore_inputs     = false;
     else if (!strcmp(argv[i], "--kernel-filter") && i + 1 < argc)
       ctx.kernel_filter = argv[++i];
     else if (!strcmp(argv[i], "--help")) { print_usage(argv[0]); return 0; }
@@ -718,9 +787,24 @@ int main(int argc, char** argv) {
   printf("[HRR]   D2H checks     : %zu pass, %zu fail\n",
          ctx.d2h_pass.load(), ctx.d2h_fail.load());
 
-  bool ok = (ctx.d2h_fail == 0);
-  if (ctx.d2h_pass == 0 && ctx.d2h_fail == 0)
-    printf("[HRR]   (no D2H validation blobs in archive -- re-capture to enable)\n");
+  // Per-kernel verify summary — only meaningful when --verify was passed AND
+  // the archive carries direction=1 snapshots (HIP_HRR_RECORD_MODE=full).
+  const size_t vp = ctx.verify_pass.load();
+  const size_t vf = ctx.verify_fail.load();
+  const size_t vr = ctx.verify_input_restored.load();
+  if (ctx.verify || vp || vf || vr) {
+    printf("[HRR]   Verify checks  : %zu pass, %zu fail (per-kernel output snapshots)\n",
+           vp, vf);
+    if (vr)
+      printf("[HRR]   Inputs restored: %zu pre-launch buffer restores\n", vr);
+    if (ctx.verify && vp == 0 && vf == 0)
+      printf("[HRR]   (no direction=1 snapshots in archive -- re-capture "
+             "with HIP_HRR_RECORD_MODE=full)\n");
+  }
+
+  bool ok = (ctx.d2h_fail == 0) && (ctx.verify_fail == 0);
+  if (ctx.d2h_pass == 0 && ctx.d2h_fail == 0 && vp == 0 && vf == 0)
+    printf("[HRR]   (no validation blobs in archive -- re-capture to enable)\n");
 
   printf("[HRR] %s\n", ok ? "PASS" : "FAIL");
 

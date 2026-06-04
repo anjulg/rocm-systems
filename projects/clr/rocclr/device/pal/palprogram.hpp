@@ -32,7 +32,7 @@ namespace amd::pal {
 using namespace amd::hsa::loader;
 class Program;
 
-class Segment {
+class Segment : public amd::HeapObject {
  public:
   Segment();
   ~Segment();

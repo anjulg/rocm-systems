@@ -4,21 +4,19 @@
 
 if (AMD_COMPUTE_WIN)
   find_path(AMD_HSA_INCLUDE_DIR hsa.h
-    PATHS
-      ${ROCCLR_SRC_DIR}/../../rocr-runtime/runtime/hsa-runtime/inc
+    HINTS
       ${ROCCLR_SRC_DIR}/../../rocr-runtime/runtime/hsa-runtime
-      ${CMAKE_CURRENT_BINARY_DIR}/../../rocr/inc
-      ${CMAKE_CURRENT_BINARY_DIR}/../../rocr
-      ${CMAKE_CURRENT_BINARY_DIR}/../..
-      ${CMAKE_CURRENT_BINARY_DIR}/..
-      ${CMAKE_CURRENT_BINARY_DIR}
       ${ROCM_PATH}
       ${ROCM_INSTALL_PATH}
+      ${CMAKE_CURRENT_BINARY_DIR}
+    PATHS
+      ${CMAKE_CURRENT_BINARY_DIR}/..
+      ${CMAKE_CURRENT_BINARY_DIR}/../..
+      ${CMAKE_CURRENT_BINARY_DIR}/../../rocr
     PATH_SUFFIXES
       include
       include/hsa
-      inc
-    NO_DEFAULT_PATH)
+      inc)
   message("Roc CLR: " ${ROCCLR_SRC_DIR} "; HSA headers:" ${AMD_HSA_INCLUDE_DIR})
   target_include_directories(rocclr PUBLIC ${AMD_HSA_INCLUDE_DIR})
   target_include_directories(rocclr PUBLIC ${AMD_HSA_INCLUDE_DIR}/..)

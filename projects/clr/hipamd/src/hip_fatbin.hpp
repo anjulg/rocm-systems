@@ -14,6 +14,9 @@
 
 #include <optional>
 
+// Forward declaration for Unique FD
+struct UniqueFD;
+
 namespace hip {
 
 // Fat Binary Info
@@ -34,7 +37,7 @@ class FatBinaryInfo {
   hipError_t ExtractFatBinaryUsingCOMGR(const std::vector<hip::Device*>& devices);
   hipError_t ExtractKpackBinary(const std::vector<hip::Device*>& devices);
   hipError_t AddDevProgram(hip::Device* device, const void* binary_image, size_t binary_size,
-                           amd::Os::FileDesc fdesc);
+                           size_t binary_offset);
   hipError_t BuildProgram(const int device_id);
 
   // Device Id bounds check
@@ -70,10 +73,8 @@ class FatBinaryInfo {
   std::string fname_;  //!< File name
   size_t foffset_;     //!< File Offset where the fat binary is present.
 
-  // When loaded from a file, image_ is the mmap address; fd is closed once
-  // ExtractFatBinaryUsingCOMGR has dup'd it for every per-device handoff.
+  // Even when file is passed image will be mmapped till ~desctructor.
   const void* image_;  //!< Image
-  size_t image_size_;  //!< Mapped image size (only valid when image_mapped_ is true)
   bool image_mapped_;  //!< flag to detect if image is mapped
 
   // Only used for FBs where image is directly passed
@@ -84,6 +85,7 @@ class FatBinaryInfo {
 
   std::vector<amd::Program*> dev_programs_;  //!< Program info per Device
 
+  std::shared_ptr<UniqueFD> ufd_;                         //!< Unique file descriptor
   std::recursive_mutex fb_lock_;                          //!< Lock for the fat binary access
   std::unordered_set<const void*> code_obj_allocations_;  //!< Track allocations for code objects
 };

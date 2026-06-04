@@ -88,6 +88,20 @@ MANUAL_CAPTURE_APIS: Set[str] = {
     "hipExtModuleLaunchKernel",
     "hipLaunchKernel",
     "hipLaunchByPtr",
+    # Cooperative kernel launches — same issue as hipLaunchKernel: raw function
+    # pointer is stale at replay; must resolve via hipGetFuncBySymbol + record_launch
+    "hipLaunchCooperativeKernel",
+    "hipLaunchCooperativeKernel_spt",
+    # hipExtLaunchKernel — same stale function_address as hipLaunchKernel;
+    # also carries startEvent/stopEvent/flags that we ignore for capture purposes
+    "hipExtLaunchKernel",
+    # Multi-kernel multi-device launches — hipLaunchParams[] contains per-device
+    # func (host ptr), args (stale ptr), and stream (stale handle), none of which
+    # can be recorded by the auto-generated shim.  Capture shim decomposes each
+    # params entry into individual hipModuleLaunchKernel events via record_launch();
+    # the multi-device event itself is a no-op at playback time.
+    "hipExtLaunchMultiKernelMultiDevice",
+    "hipLaunchCooperativeKernelMultiDevice",
     # Module load — code object snapshotting to disk
     "hipModuleLoadData",
     "hipModuleLoadDataEx",
@@ -103,15 +117,41 @@ MANUAL_CAPTURE_APIS: Set[str] = {
     # Host memory registration — blob snapshotting of initial host mem contents
     "hipHostRegister",
     "hipHostUnregister",
+    # Old HIP C launch API: hipConfigureCall → hipSetupArgument×N → hipLaunchByPtr.
+    # Generated shims for the first two don't update the TLS dims/arg-buffer that
+    # capture_hipLaunchByPtr reads, so the kernel launch event ends up with wrong
+    # grid dims and no captured args.  Manual shims fix both issues.
+    "hipConfigureCall",
+    "__hipPushCallConfiguration",
+    "hipSetupArgument",
+    # 2D memcpy — must serialise full hip_Memcpy2D struct + linearised H2D blob
+    "hipDrvMemcpy2DUnaligned",
+    "hipMemcpyParam2D",
+    "hipMemcpyParam2DAsync",
+    # hipModuleLaunchCooperativeKernel — driver-level cooperative launch;
+    # same fix as hipLaunchCooperativeKernel: route through record_launch with
+    # a cooperative api_id so replay dispatches via the coop launch path.
+    "hipModuleLaunchCooperativeKernel",
+    # hipDrvLaunchKernelEx — extensible launch config struct (stale pointer);
+    # generated shim passes a->config stale ptr + (void**)&nullptr params/extra.
+    # Route through record_launch, detecting cooperative attrs to tag event type.
+    "hipDrvLaunchKernelEx",
+    # hipModuleLoadFatBinary — loads from a stale in-memory fat-binary pointer;
+    # generated shim passes a->fatbin straight to the API → segfault.
+    # Snapshot the fat binary at capture time and load by hash at replay,
+    # identical to the hipModuleLoadData / hipModuleLoad treatment.
+    "hipModuleLoadFatBinary",
+    # hipModuleGetFunction — previously PASSTHROUGH_ONLY (no event written).
+    # Function handles are stale at replay; must capture the function name as a blob
+    # and populate func_map at playback so APIs like hipFuncGetAttribute work correctly.
+    "hipModuleGetFunction",
 }
 
 # Alias for backward compat within the file (some helpers used MANUAL_APIS)
 MANUAL_APIS = MANUAL_CAPTURE_APIS
 
 # APIs that are pass-through even for the manual path
-# (hipModuleGetFunction: function handles identified by name at launch time)
 PASSTHROUGH_ONLY: Set[str] = {
-    "hipModuleGetFunction",
 }
 
 # APIs where the generated shim writes event BEFORE calling real fn
@@ -128,6 +168,19 @@ MANUAL_PLAYBACK_APIS: Set[str] = {
     "hipExtModuleLaunchKernel",
     "hipLaunchKernel",
     "hipLaunchByPtr",
+    # Cooperative kernel launches — stale function pointer in generated struct;
+    # must route through replay_kernel_launch() like the other kernel launch APIs
+    "hipLaunchCooperativeKernel",
+    "hipLaunchCooperativeKernel_spt",
+    # hipExtLaunchKernel — same stale function_address as hipLaunchKernel;
+    # routes through replay_kernel_launch() (startEvent/stopEvent/flags ignored)
+    "hipExtLaunchKernel",
+    # D2H copies: dst is a host pointer (plain malloc/stack/new) — not in the
+    # GPU alloc_map, so translate_ptr(dst) returns nullptr.  Manual shim tries
+    # the map first (handles hipHostRegister/managed dst), then falls back to a
+    # temporary host buffer so the copy still executes against the live GPU src.
+    "hipMemcpyDtoH",
+    "hipMemcpyDtoHAsync",
     # Memcpy H2D — must load blob from disk using hash fields appended to struct
     "hipMemcpy",
     "hipMemcpyAsync",
@@ -138,7 +191,7 @@ MANUAL_PLAYBACK_APIS: Set[str] = {
     "hipModuleLoadData",
     "hipModuleLoadDataEx",
     "hipModuleLoad",
-    # Function lookup — resolved by name at kernel launch; no handle map needed
+    # Function lookup — must populate func_map for APIs like hipFuncGetAttribute
     "hipModuleGetFunction",
     # Alloc — need ctx.record_alloc / ctx.remove_alloc (not encodable by generator)
     "hipMalloc",
@@ -170,6 +223,24 @@ MANUAL_PLAYBACK_APIS: Set[str] = {
     "hipStreamEndCapture",
     "hipGraphInstantiate",
     "hipGraphLaunch",
+    # 2D memcpy — full hip_Memcpy2D struct embedded in event; requires blob restore
+    # for H2D direction and device-pointer translation for device src/dst.
+    "hipDrvMemcpy2DUnaligned",
+    "hipMemcpyParam2D",
+    "hipMemcpyParam2DAsync",
+    # hipModuleLaunchCooperativeKernel — driver-level cooperative launch.
+    # Generated shim passes (void**)&nullptr as kernelParams → error 400.
+    # Must route through record_launch / replay_kernel_launch like the other
+    # module-level launches; api_id = HRR_API_HIPMODULELAUNCHCOOPERATIVEKERNEL
+    # so replay_kernel_launch dispatches it via the cooperative path.
+    "hipModuleLaunchCooperativeKernel",
+    # hipDrvLaunchKernelEx — extensible config struct containing grid/block/stream.
+    # Same stale-pointer + wrong-kernelParams failure as the other kernel launch APIs.
+    # Route through record_launch; detect cooperative via config->attrs at capture time.
+    "hipDrvLaunchKernelEx",
+    # hipModuleLoadFatBinary — fat-binary pointer is stale; snapshot at capture,
+    # load by hash at replay (same mechanism as hipModuleLoadData).
+    "hipModuleLoadFatBinary",
 }
 
 # ---------------------------------------------------------------------------
@@ -182,12 +253,91 @@ MANUAL_PLAYBACK_APIS: Set[str] = {
 #   Category 6: misc wrong-return-type or missing struct fields
 # ---------------------------------------------------------------------------
 NOOP_PLAYBACK_APIS: Set[str] = {
+    # Old HIP C launch API preamble: all relevant state (grid dims, args) is
+    # embedded in the subsequent hipLaunchByPtr kernel-launch event, so these
+    # events serve no purpose during replay.
+    "hipConfigureCall",
+    "hipSetupArgument",
+    # Multi-device multi-kernel launches: capture decomposes into individual
+    # hipModuleLaunchKernel events; this event is a no-op at playback time.
+    "hipExtLaunchMultiKernelMultiDevice",
+    "hipLaunchCooperativeKernelMultiDevice",
+    # hipModuleLaunchCooperativeKernelMultiDevice: hipFunctionLaunchParams[]
+    # contains hipFunction_t handles (stale) and kernelParams (stale ptr).
+    # Generated shim creates an empty params struct → invalid resource handle.
+    # No-op until a full decomposition capture shim is implemented.
+    "hipModuleLaunchCooperativeKernelMultiDevice",
+    # APIs that schedule CPU callbacks with a stale function pointer and user-data
+    # pointer from the original process.  The callbacks cannot be replayed (code is
+    # gone, user data is stale) and installing them would crash or invoke arbitrary
+    # code in the replay process.
+    "hipLaunchHostFunc",
+    "hipLaunchHostFunc_spt",
+    "hipStreamAddCallback",
+    "hipStreamAddCallback_spt",
+    # APIs that pass stale host-side string/data pointers to the HIP runtime.
+    # The captured uint64_t field is cast to const char* (or void*) by the
+    # generated playback → segfault reading unmapped original-process memory.
+    # All of these are query or setup calls whose results are never consumed by
+    # subsequent HIP API calls recorded in the trace.
+    "hipGetProcAddress",          # stale symbol string → segfault
+    "hipGetProcAddress_spt",      # same
+    "hipGetDriverEntryPoint",     # stale symbol string
+    "hipGetDriverEntryPoint_spt", # same
+    "hipDeviceGetByPCIBusId",     # stale pciBusId string
+    "hipLinkAddData",             # stale name + data pointers
+    "hipLinkAddFile",             # stale path string
+    "hipLibraryLoadFromFile",     # stale fileName string
+    "hipLibraryGetKernel",        # stale name string
+    "hipGraphDebugDotPrint",      # stale path string (debug output only)
+    # 3D memcpy APIs that pass a stale struct pointer (HIP_MEMCPY3D*, hipMemcpy3DParms*)
+    # — the struct is never serialised by the capture shim → segfault on dereference.
+    # (hipDrvMemcpy2DUnaligned / hipMemcpyParam2D / hipMemcpyParam2DAsync are now
+    #  implemented as MANUAL_CAPTURE + MANUAL_PLAYBACK; they are no longer no-ops.)
+    "hipDrvMemcpy3D",
+    "hipDrvMemcpy3DAsync",
+    "hipMemcpy3D",
+    "hipMemcpy3DAsync",
+    "hipMemcpy3D_spt",
+    "hipMemcpy3DAsync_spt",
+    # Graph node param setters: pNodeParams/nodeParams is a stale struct pointer
+    # (hipKernelNodeParams*, hipMemsetParams*, hipHostNodeParams*, etc.).
+    "hipGraphMemcpyNodeSetParams",
+    "hipDrvGraphExecMemcpyNodeSetParams",
+    "hipDrvGraphMemcpyNodeSetParams",
+    "hipGraphExecHostNodeSetParams",
+    "hipGraphExecKernelNodeSetParams",
+    "hipGraphExecMemsetNodeSetParams",
+    "hipGraphHostNodeSetParams",
+    "hipGraphKernelNodeSetParams",
+    "hipGraphMemsetNodeSetParams",
+    "hipGraphExternalSemaphoresSignalNodeSetParams",
+    "hipGraphExternalSemaphoresWaitNodeSetParams",
+    "hipGraphExecExternalSemaphoresSignalNodeSetParams",
+    "hipGraphExecExternalSemaphoresWaitNodeSetParams",
+    "hipGraphExecBatchMemOpNodeSetParams",
     # Category 1: APIs not present in ROCm SDK 6.4 headers (C3861/LNK2019)
     "hipExtHostAlloc",
     "hipGLGetDevices",
     "hipGraphicsGLRegisterBuffer",
     "hipGraphicsGLRegisterImage",
     "hipHccModuleLaunchKernel",
+    # Function handle lookup / attribute APIs that take a stale host-side function
+    # pointer.  The returned handle / attribute values are not consumed by the
+    # replay engine (kernel launches resolve by name; occupancy queries are noops).
+    "hipGetFuncBySymbol",
+    "hipFuncGetAttributes",
+    "hipFuncSetAttribute",
+    "hipFuncSetCacheConfig",
+    "hipFuncSetSharedMemConfig",
+    # Occupancy query APIs that take a host-side `const void* f` function pointer.
+    # That pointer is stale during replay (different process address space), so we
+    # skip re-executing these and return hipSuccess.  The output values (numBlocks,
+    # gridSize, blockSize) are not used by the replay engine; the actual grid/block
+    # dimensions were already captured in the subsequent kernel-launch event.
+    "hipOccupancyMaxActiveBlocksPerMultiprocessor",
+    "hipOccupancyMaxActiveBlocksPerMultiprocessorWithFlags",
+    "hipOccupancyMaxPotentialBlockSize",
     "hipOccupancyMaxActiveClusters",
     "hipOccupancyMaxPotentialClusterSize",
     "hipPointerSetAttribute",
@@ -291,6 +441,17 @@ EXTRA_FIELDS: Dict[str, List[Tuple[str, str, str]]] = {
         ("uint64_t", "co_hash_hi", "code object hash hi"),
         ("uint32_t", "module_id",  "sequential module handle ID"),
     ],
+    # hipModuleLoadFatBinary — same blob-hash mechanism as hipModuleLoadData
+    "hipModuleLoadFatBinary": [
+        ("uint64_t", "co_hash_lo", "code object hash lo"),
+        ("uint64_t", "co_hash_hi", "code object hash hi"),
+        ("uint32_t", "module_id",  "sequential module handle ID"),
+    ],
+    # hipModuleGetFunction — capture the function name as a blob, store its hash
+    "hipModuleGetFunction": [
+        ("uint64_t", "fname_hash_lo", "function name blob hash lo"),
+        ("uint64_t", "fname_hash_hi", "function name blob hash hi"),
+    ],
     # hipHostRegister — snapshot of host memory at registration time
     "hipHostRegister":    [("uint64_t", "blob_hash_lo", "sysmem blob hash lo"),
                            ("uint64_t", "blob_hash_hi", "sysmem blob hash hi")],
@@ -314,6 +475,75 @@ EXTRA_FIELDS: Dict[str, List[Tuple[str, str, str]]] = {
     # hipMemcpyWithStream — same semantics as hipMemcpyAsync (H2D blob, D2H/D2D zero)
     "hipMemcpyWithStream": [("uint64_t", "blob_hash_lo", "H2D blob hash lo"),
                             ("uint64_t", "blob_hash_hi", "H2D blob hash hi")],
+    # 2D memcpy variants — full hip_Memcpy2D struct contents + H2D blob hash
+    # srcMemoryType / dstMemoryType are uint32_t (hipMemoryType enum).
+    # pad0/pad1 ensure uint64_t alignment after the enum fields.
+    "hipDrvMemcpy2DUnaligned": [
+        ("uint64_t", "src_x_bytes",  "hip_Memcpy2D::srcXInBytes"),
+        ("uint64_t", "src_y",        "hip_Memcpy2D::srcY"),
+        ("uint32_t", "src_mem_type", "hip_Memcpy2D::srcMemoryType"),
+        ("uint32_t", "pad0",         "alignment padding"),
+        ("uint64_t", "src_host",     "hip_Memcpy2D::srcHost (capture-time)"),
+        ("uint64_t", "src_device",   "hip_Memcpy2D::srcDevice (capture-time)"),
+        ("uint64_t", "src_array",    "hip_Memcpy2D::srcArray (capture-time)"),
+        ("uint64_t", "src_pitch",    "hip_Memcpy2D::srcPitch"),
+        ("uint64_t", "dst_x_bytes",  "hip_Memcpy2D::dstXInBytes"),
+        ("uint64_t", "dst_y",        "hip_Memcpy2D::dstY"),
+        ("uint32_t", "dst_mem_type", "hip_Memcpy2D::dstMemoryType"),
+        ("uint32_t", "pad1",         "alignment padding"),
+        ("uint64_t", "dst_host",     "hip_Memcpy2D::dstHost (capture-time)"),
+        ("uint64_t", "dst_device",   "hip_Memcpy2D::dstDevice (capture-time)"),
+        ("uint64_t", "dst_array",    "hip_Memcpy2D::dstArray (capture-time)"),
+        ("uint64_t", "dst_pitch",    "hip_Memcpy2D::dstPitch"),
+        ("uint64_t", "width_bytes",  "hip_Memcpy2D::WidthInBytes"),
+        ("uint64_t", "height",       "hip_Memcpy2D::Height"),
+        ("uint64_t", "blob_hash_lo", "linearised H2D src blob hash lo"),
+        ("uint64_t", "blob_hash_hi", "linearised H2D src blob hash hi"),
+    ],
+    "hipMemcpyParam2D": [
+        ("uint64_t", "src_x_bytes",  "hip_Memcpy2D::srcXInBytes"),
+        ("uint64_t", "src_y",        "hip_Memcpy2D::srcY"),
+        ("uint32_t", "src_mem_type", "hip_Memcpy2D::srcMemoryType"),
+        ("uint32_t", "pad0",         "alignment padding"),
+        ("uint64_t", "src_host",     "hip_Memcpy2D::srcHost (capture-time)"),
+        ("uint64_t", "src_device",   "hip_Memcpy2D::srcDevice (capture-time)"),
+        ("uint64_t", "src_array",    "hip_Memcpy2D::srcArray (capture-time)"),
+        ("uint64_t", "src_pitch",    "hip_Memcpy2D::srcPitch"),
+        ("uint64_t", "dst_x_bytes",  "hip_Memcpy2D::dstXInBytes"),
+        ("uint64_t", "dst_y",        "hip_Memcpy2D::dstY"),
+        ("uint32_t", "dst_mem_type", "hip_Memcpy2D::dstMemoryType"),
+        ("uint32_t", "pad1",         "alignment padding"),
+        ("uint64_t", "dst_host",     "hip_Memcpy2D::dstHost (capture-time)"),
+        ("uint64_t", "dst_device",   "hip_Memcpy2D::dstDevice (capture-time)"),
+        ("uint64_t", "dst_array",    "hip_Memcpy2D::dstArray (capture-time)"),
+        ("uint64_t", "dst_pitch",    "hip_Memcpy2D::dstPitch"),
+        ("uint64_t", "width_bytes",  "hip_Memcpy2D::WidthInBytes"),
+        ("uint64_t", "height",       "hip_Memcpy2D::Height"),
+        ("uint64_t", "blob_hash_lo", "linearised H2D src blob hash lo"),
+        ("uint64_t", "blob_hash_hi", "linearised H2D src blob hash hi"),
+    ],
+    "hipMemcpyParam2DAsync": [
+        ("uint64_t", "src_x_bytes",  "hip_Memcpy2D::srcXInBytes"),
+        ("uint64_t", "src_y",        "hip_Memcpy2D::srcY"),
+        ("uint32_t", "src_mem_type", "hip_Memcpy2D::srcMemoryType"),
+        ("uint32_t", "pad0",         "alignment padding"),
+        ("uint64_t", "src_host",     "hip_Memcpy2D::srcHost (capture-time)"),
+        ("uint64_t", "src_device",   "hip_Memcpy2D::srcDevice (capture-time)"),
+        ("uint64_t", "src_array",    "hip_Memcpy2D::srcArray (capture-time)"),
+        ("uint64_t", "src_pitch",    "hip_Memcpy2D::srcPitch"),
+        ("uint64_t", "dst_x_bytes",  "hip_Memcpy2D::dstXInBytes"),
+        ("uint64_t", "dst_y",        "hip_Memcpy2D::dstY"),
+        ("uint32_t", "dst_mem_type", "hip_Memcpy2D::dstMemoryType"),
+        ("uint32_t", "pad1",         "alignment padding"),
+        ("uint64_t", "dst_host",     "hip_Memcpy2D::dstHost (capture-time)"),
+        ("uint64_t", "dst_device",   "hip_Memcpy2D::dstDevice (capture-time)"),
+        ("uint64_t", "dst_array",    "hip_Memcpy2D::dstArray (capture-time)"),
+        ("uint64_t", "dst_pitch",    "hip_Memcpy2D::dstPitch"),
+        ("uint64_t", "width_bytes",  "hip_Memcpy2D::WidthInBytes"),
+        ("uint64_t", "height",       "hip_Memcpy2D::Height"),
+        ("uint64_t", "blob_hash_lo", "linearised H2D src blob hash lo"),
+        ("uint64_t", "blob_hash_hi", "linearised H2D src blob hash hi"),
+    ],
 }
 
 

@@ -37,7 +37,6 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
-#include <limits>
 #include <ctype.h>
 #include <fstream>
 #include <iostream>
@@ -491,10 +490,6 @@ void NullDevice::fillDeviceInfo(const Pal::DeviceProperties& palProp,
   info_.maxWorkItemSizes_[2] = info_.maxWorkGroupSize_;
   info_.preferredWorkGroupSize_ = settings().preferredWorkGroupSize_;
 
-  info_.maxGridDim_[0] = std::numeric_limits<int32_t>::max();
-  info_.maxGridDim_[1] = std::numeric_limits<uint16_t>::max();
-  info_.maxGridDim_[2] = std::numeric_limits<uint16_t>::max();
-
   info_.localMemType_ = CL_LOCAL;
   info_.localMemSize_ = settings().hwLDSSize_;
   info_.extensions_ = getExtensionString();
@@ -618,7 +613,7 @@ void NullDevice::fillDeviceInfo(const Pal::DeviceProperties& palProp,
   info_.virtualMemAllocGranularityMinimum_ =
       static_cast<size_t>(palProp.gpuMemoryProperties.virtualMemAllocGranularity);
   info_.virtualMemAllocGranularityRecommended_ =
-      static_cast<size_t>(palProp.gpuMemoryProperties.largePageSizeInBytes);
+      static_cast<size_t>(palProp.gpuMemoryProperties.virtualMemAllocGranularity);
   info_.vgprAllocGranularity_ = palProp.gfxipProperties.shaderCore.vgprAllocGranularity;
   info_.vgprsPerSimd_ = palProp.gfxipProperties.shaderCore.vgprsPerSimd;
   info_.availableVGPRs_ = palProp.gfxipProperties.shaderCore.numAvailableVgprs;

@@ -35,7 +35,7 @@ class Program;
  *  @{
  */
 
-class KernelSignature {
+class KernelSignature : public HeapObject {
  private:
   std::vector<KernelParameterDescriptor> params_;
   std::string attributes_;  //!< The kernel attributes
@@ -103,7 +103,7 @@ class KernelSignature {
 
 // @todo: look into a copy-on-write model instead of copy-on-read.
 //
-class KernelParameters {
+class KernelParameters : protected HeapObject {
  private:
   //! The signature describing these parameters.
   KernelSignature& signature_;

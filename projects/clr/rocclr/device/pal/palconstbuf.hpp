@@ -79,7 +79,7 @@ class ManagedBuffer : public amd::EmbeddedObject {
 };
 
 //! Constant buffer
-class ConstantBuffer {
+class ConstantBuffer : public amd::HeapObject {
  public:
   //! Constructor for the ConstBuffer class
   ConstantBuffer(ManagedBuffer& mbuf,  //!< Managed buffer

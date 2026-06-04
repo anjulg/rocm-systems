@@ -74,24 +74,6 @@ static hipError_t capture___hipPopCallConfiguration(dim3* gridDim, dim3* blockDi
   return r;
 }
 
-// Generated shim
-static hipError_t capture___hipPushCallConfiguration(dim3 gridDim, dim3 blockDim, size_t sharedMem, hipStream_t stream) {
-  hipError_t r = g_real_compiler_table.__hipPushCallConfiguration_fn(gridDim, blockDim, sharedMem, stream);
-  if (r == hipSuccess) {
-    hrr_args___hipPushCallConfiguration a{};
-    a.ret         = static_cast<int32_t>(r);
-    a.gridDim_x = gridDim.x;
-    a.gridDim_y = gridDim.y;
-    a.gridDim_z = gridDim.z;
-    a.blockDim_x = blockDim.x;
-    a.blockDim_y = blockDim.y;
-    a.blockDim_z = blockDim.z;
-    a.sharedMem = static_cast<decltype(a.sharedMem)>(sharedMem);
-    a.stream = reinterpret_cast<uint64_t>(stream);
-    hrr_cap::writer::write_event_raw(HRR_API_HIPPUSHCALLCONFIGURATION, &a.hdr, sizeof(a));
-  }
-  return r;
-}
 
 
 // Generated shim
@@ -365,24 +347,6 @@ static hipError_t capture_hipChooseDeviceR0000(int* device, const hipDeviceProp_
   return r;
 }
 
-// Generated shim
-static hipError_t capture_hipConfigureCall(dim3 gridDim, dim3 blockDim, size_t sharedMem, hipStream_t stream) {
-  hipError_t r = g_real_table.hipConfigureCall_fn(gridDim, blockDim, sharedMem, stream);
-  if (r == hipSuccess) {
-    hrr_args_hipConfigureCall a{};
-    a.ret         = static_cast<int32_t>(r);
-    a.gridDim_x = gridDim.x;
-    a.gridDim_y = gridDim.y;
-    a.gridDim_z = gridDim.z;
-    a.blockDim_x = blockDim.x;
-    a.blockDim_y = blockDim.y;
-    a.blockDim_z = blockDim.z;
-    a.sharedMem = static_cast<decltype(a.sharedMem)>(sharedMem);
-    a.stream = reinterpret_cast<uint64_t>(stream);
-    hrr_cap::writer::write_event_raw(HRR_API_HIPCONFIGURECALL, &a.hdr, sizeof(a));
-  }
-  return r;
-}
 
 // Generated shim
 static hipError_t capture_hipCreateSurfaceObject(hipSurfaceObject_t* pSurfObject, const hipResourceDesc* pResDesc) {
@@ -1124,17 +1088,6 @@ static hipError_t capture_hipDrvGraphAddMemcpyNode(hipGraphNode_t* phGraphNode, 
   return r;
 }
 
-// Generated shim
-static hipError_t capture_hipDrvMemcpy2DUnaligned(const hip_Memcpy2D* pCopy) {
-  hipError_t r = g_real_table.hipDrvMemcpy2DUnaligned_fn(pCopy);
-  if (r == hipSuccess) {
-    hrr_args_hipDrvMemcpy2DUnaligned a{};
-    a.ret         = static_cast<int32_t>(r);
-    a.pCopy = reinterpret_cast<uint64_t>(pCopy);
-    hrr_cap::writer::write_event_raw(HRR_API_HIPDRVMEMCPY2DUNALIGNED, &a.hdr, sizeof(a));
-  }
-  return r;
-}
 
 // Generated shim
 static hipError_t capture_hipDrvMemcpy3D(const HIP_MEMCPY3D* pCopy) {
@@ -1279,43 +1232,7 @@ static hipError_t capture_hipExtGetLinkTypeAndHopCount(int device1, int device2,
   return r;
 }
 
-// Generated shim
-static hipError_t capture_hipExtLaunchKernel(const void* function_address, dim3 numBlocks, dim3 dimBlocks, void** args, size_t sharedMemBytes, hipStream_t stream, hipEvent_t startEvent, hipEvent_t stopEvent, int flags) {
-  hipError_t r = g_real_table.hipExtLaunchKernel_fn(function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream, startEvent, stopEvent, flags);
-  if (r == hipSuccess) {
-    hrr_args_hipExtLaunchKernel a{};
-    a.ret         = static_cast<int32_t>(r);
-    a.function_address = reinterpret_cast<uint64_t>(function_address);
-    a.numBlocks_x = numBlocks.x;
-    a.numBlocks_y = numBlocks.y;
-    a.numBlocks_z = numBlocks.z;
-    a.dimBlocks_x = dimBlocks.x;
-    a.dimBlocks_y = dimBlocks.y;
-    a.dimBlocks_z = dimBlocks.z;
-    a.sharedMemBytes = static_cast<decltype(a.sharedMemBytes)>(sharedMemBytes);
-    a.stream = reinterpret_cast<uint64_t>(stream);
-    a.startEvent = reinterpret_cast<uint64_t>(startEvent);
-    a.stopEvent = reinterpret_cast<uint64_t>(stopEvent);
-    a.flags = static_cast<decltype(a.flags)>(flags);
-    if (args) a.args = reinterpret_cast<uint64_t>(*args);
-    hrr_cap::writer::write_event_raw(HRR_API_HIPEXTLAUNCHKERNEL, &a.hdr, sizeof(a));
-  }
-  return r;
-}
 
-// Generated shim
-static hipError_t capture_hipExtLaunchMultiKernelMultiDevice(hipLaunchParams* launchParamsList, int numDevices, unsigned int flags) {
-  hipError_t r = g_real_table.hipExtLaunchMultiKernelMultiDevice_fn(launchParamsList, numDevices, flags);
-  if (r == hipSuccess) {
-    hrr_args_hipExtLaunchMultiKernelMultiDevice a{};
-    a.ret         = static_cast<int32_t>(r);
-    a.launchParamsList = reinterpret_cast<uint64_t>(launchParamsList);
-    a.numDevices = static_cast<decltype(a.numDevices)>(numDevices);
-    a.flags = static_cast<decltype(a.flags)>(flags);
-    hrr_cap::writer::write_event_raw(HRR_API_HIPEXTLAUNCHMULTIKERNELMULTIDEVICE, &a.hdr, sizeof(a));
-  }
-  return r;
-}
 
 // Generated shim
 static hipError_t capture_hipExtMallocWithFlags(void** ptr, size_t sizeBytes, unsigned int flags) {
@@ -3014,40 +2931,7 @@ static const char* capture_hipKernelNameRefByPtr(const void* hostFunction, hipSt
 }
 
 
-// Generated shim
-static hipError_t capture_hipLaunchCooperativeKernel(const void* f, dim3 gridDim, dim3 blockDimX, void** kernelParams, unsigned int sharedMemBytes, hipStream_t stream) {
-  hipError_t r = g_real_table.hipLaunchCooperativeKernel_fn(f, gridDim, blockDimX, kernelParams, sharedMemBytes, stream);
-  if (r == hipSuccess) {
-    hrr_args_hipLaunchCooperativeKernel a{};
-    a.ret         = static_cast<int32_t>(r);
-    a.f = reinterpret_cast<uint64_t>(f);
-    a.gridDim_x = gridDim.x;
-    a.gridDim_y = gridDim.y;
-    a.gridDim_z = gridDim.z;
-    a.blockDimX_x = blockDimX.x;
-    a.blockDimX_y = blockDimX.y;
-    a.blockDimX_z = blockDimX.z;
-    a.sharedMemBytes = static_cast<decltype(a.sharedMemBytes)>(sharedMemBytes);
-    a.stream = reinterpret_cast<uint64_t>(stream);
-    if (kernelParams) a.kernelParams = reinterpret_cast<uint64_t>(*kernelParams);
-    hrr_cap::writer::write_event_raw(HRR_API_HIPLAUNCHCOOPERATIVEKERNEL, &a.hdr, sizeof(a));
-  }
-  return r;
-}
 
-// Generated shim
-static hipError_t capture_hipLaunchCooperativeKernelMultiDevice(hipLaunchParams* launchParamsList, int numDevices, unsigned int flags) {
-  hipError_t r = g_real_table.hipLaunchCooperativeKernelMultiDevice_fn(launchParamsList, numDevices, flags);
-  if (r == hipSuccess) {
-    hrr_args_hipLaunchCooperativeKernelMultiDevice a{};
-    a.ret         = static_cast<int32_t>(r);
-    a.launchParamsList = reinterpret_cast<uint64_t>(launchParamsList);
-    a.numDevices = static_cast<decltype(a.numDevices)>(numDevices);
-    a.flags = static_cast<decltype(a.flags)>(flags);
-    hrr_cap::writer::write_event_raw(HRR_API_HIPLAUNCHCOOPERATIVEKERNELMULTIDEVICE, &a.hdr, sizeof(a));
-  }
-  return r;
-}
 
 // Generated shim
 static hipError_t capture_hipLaunchHostFunc(hipStream_t stream, hipHostFn_t fn, void* userData) {
@@ -4020,30 +3904,7 @@ static hipError_t capture_hipMemcpyHtoA(hipArray_t dstArray, size_t dstOffset, c
 
 
 
-// Generated shim
-static hipError_t capture_hipMemcpyParam2D(const hip_Memcpy2D* pCopy) {
-  hipError_t r = g_real_table.hipMemcpyParam2D_fn(pCopy);
-  if (r == hipSuccess) {
-    hrr_args_hipMemcpyParam2D a{};
-    a.ret         = static_cast<int32_t>(r);
-    a.pCopy = reinterpret_cast<uint64_t>(pCopy);
-    hrr_cap::writer::write_event_raw(HRR_API_HIPMEMCPYPARAM2D, &a.hdr, sizeof(a));
-  }
-  return r;
-}
 
-// Generated shim
-static hipError_t capture_hipMemcpyParam2DAsync(const hip_Memcpy2D* pCopy, hipStream_t stream) {
-  hipError_t r = g_real_table.hipMemcpyParam2DAsync_fn(pCopy, stream);
-  if (r == hipSuccess) {
-    hrr_args_hipMemcpyParam2DAsync a{};
-    a.ret         = static_cast<int32_t>(r);
-    a.pCopy = reinterpret_cast<uint64_t>(pCopy);
-    a.stream = reinterpret_cast<uint64_t>(stream);
-    hrr_cap::writer::write_event_raw(HRR_API_HIPMEMCPYPARAM2DASYNC, &a.hdr, sizeof(a));
-  }
-  return r;
-}
 
 // Generated shim
 static hipError_t capture_hipMemcpyPeer(void* dst, int dstDeviceId, const void* src, int srcDeviceId, size_t sizeBytes) {
@@ -4347,11 +4208,6 @@ static hipError_t capture_hipMipmappedArrayGetLevel(hipArray_t* pLevelArray, hip
   return r;
 }
 
-// Generated shim
-static hipError_t capture_hipModuleGetFunction(hipFunction_t* function, hipModule_t module, const char* kname) {
-  hipError_t r = g_real_table.hipModuleGetFunction_fn(function, module, kname);
-  return r;
-}
 
 // Generated shim
 static hipError_t capture_hipModuleGetFunctionCount(unsigned int* count, hipModule_t module) {
@@ -4395,26 +4251,6 @@ static hipError_t capture_hipModuleGetTexRef(textureReference** texRef, hipModul
   return r;
 }
 
-// Generated shim
-static hipError_t capture_hipModuleLaunchCooperativeKernel(hipFunction_t f, unsigned int gridDimX, unsigned int gridDimY, unsigned int gridDimZ, unsigned int blockDimX, unsigned int blockDimY, unsigned int blockDimZ, unsigned int sharedMemBytes, hipStream_t stream, void** kernelParams) {
-  hipError_t r = g_real_table.hipModuleLaunchCooperativeKernel_fn(f, gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ, sharedMemBytes, stream, kernelParams);
-  if (r == hipSuccess) {
-    hrr_args_hipModuleLaunchCooperativeKernel a{};
-    a.ret         = static_cast<int32_t>(r);
-    a.f = reinterpret_cast<uint64_t>(f);
-    a.gridDimX = static_cast<decltype(a.gridDimX)>(gridDimX);
-    a.gridDimY = static_cast<decltype(a.gridDimY)>(gridDimY);
-    a.gridDimZ = static_cast<decltype(a.gridDimZ)>(gridDimZ);
-    a.blockDimX = static_cast<decltype(a.blockDimX)>(blockDimX);
-    a.blockDimY = static_cast<decltype(a.blockDimY)>(blockDimY);
-    a.blockDimZ = static_cast<decltype(a.blockDimZ)>(blockDimZ);
-    a.sharedMemBytes = static_cast<decltype(a.sharedMemBytes)>(sharedMemBytes);
-    a.stream = reinterpret_cast<uint64_t>(stream);
-    if (kernelParams) a.kernelParams = reinterpret_cast<uint64_t>(*kernelParams);
-    hrr_cap::writer::write_event_raw(HRR_API_HIPMODULELAUNCHCOOPERATIVEKERNEL, &a.hdr, sizeof(a));
-  }
-  return r;
-}
 
 // Generated shim
 static hipError_t capture_hipModuleLaunchCooperativeKernelMultiDevice(hipFunctionLaunchParams* launchParamsList, unsigned int numDevices, unsigned int flags) {
@@ -4787,19 +4623,6 @@ static hipError_t capture_hipSetDeviceFlags(unsigned flags) {
   return r;
 }
 
-// Generated shim
-static hipError_t capture_hipSetupArgument(const void* arg, size_t size, size_t offset) {
-  hipError_t r = g_real_table.hipSetupArgument_fn(arg, size, offset);
-  if (r == hipSuccess) {
-    hrr_args_hipSetupArgument a{};
-    a.ret         = static_cast<int32_t>(r);
-    a.arg = reinterpret_cast<uint64_t>(arg);
-    a.size = static_cast<decltype(a.size)>(size);
-    a.offset = static_cast<decltype(a.offset)>(offset);
-    hrr_cap::writer::write_event_raw(HRR_API_HIPSETUPARGUMENT, &a.hdr, sizeof(a));
-  }
-  return r;
-}
 
 // Generated shim
 static hipError_t capture_hipSignalExternalSemaphoresAsync(const hipExternalSemaphore_t* extSemArray, const hipExternalSemaphoreSignalParams* paramsArray, unsigned int numExtSems, hipStream_t stream) {
@@ -6057,26 +5880,6 @@ static hipError_t capture_hipEventRecord_spt(hipEvent_t event, hipStream_t strea
   return r;
 }
 
-// Generated shim
-static hipError_t capture_hipLaunchCooperativeKernel_spt(const void* f, dim3 gridDim, dim3 blockDim, void** kernelParams, uint32_t sharedMemBytes, hipStream_t hStream) {
-  hipError_t r = g_real_table.hipLaunchCooperativeKernel_spt_fn(f, gridDim, blockDim, kernelParams, sharedMemBytes, hStream);
-  if (r == hipSuccess) {
-    hrr_args_hipLaunchCooperativeKernel_spt a{};
-    a.ret         = static_cast<int32_t>(r);
-    a.f = reinterpret_cast<uint64_t>(f);
-    a.gridDim_x = gridDim.x;
-    a.gridDim_y = gridDim.y;
-    a.gridDim_z = gridDim.z;
-    a.blockDim_x = blockDim.x;
-    a.blockDim_y = blockDim.y;
-    a.blockDim_z = blockDim.z;
-    a.sharedMemBytes = static_cast<decltype(a.sharedMemBytes)>(sharedMemBytes);
-    a.hStream = reinterpret_cast<uint64_t>(hStream);
-    if (kernelParams) a.kernelParams = reinterpret_cast<uint64_t>(*kernelParams);
-    hrr_cap::writer::write_event_raw(HRR_API_HIPLAUNCHCOOPERATIVEKERNEL_SPT, &a.hdr, sizeof(a));
-  }
-  return r;
-}
 
 // Generated shim
 static hipError_t capture_hipLaunchKernel_spt(const void* function_address, dim3 numBlocks, dim3 dimBlocks, void** args, size_t sharedMemBytes, hipStream_t stream) {
@@ -6822,20 +6625,6 @@ static hipError_t capture_hipLaunchKernelExC(const hipLaunchConfig_t* config, co
   return r;
 }
 
-// Generated shim
-static hipError_t capture_hipDrvLaunchKernelEx(const HIP_LAUNCH_CONFIG* config, hipFunction_t f, void** params, void** extra) {
-  hipError_t r = g_real_table.hipDrvLaunchKernelEx_fn(config, f, params, extra);
-  if (r == hipSuccess) {
-    hrr_args_hipDrvLaunchKernelEx a{};
-    a.ret         = static_cast<int32_t>(r);
-    a.config = reinterpret_cast<uint64_t>(config);
-    a.f = reinterpret_cast<uint64_t>(f);
-    if (params) a.params = reinterpret_cast<uint64_t>(*params);
-    if (extra) a.extra = reinterpret_cast<uint64_t>(*extra);
-    hrr_cap::writer::write_event_raw(HRR_API_HIPDRVLAUNCHKERNELEX, &a.hdr, sizeof(a));
-  }
-  return r;
-}
 
 // Generated shim
 static hipError_t capture_hipMemGetHandleForAddressRange(void* handle, hipDeviceptr_t dptr, size_t size, hipMemRangeHandleType handleType, unsigned long long flags) {
@@ -6980,18 +6769,6 @@ static hipError_t capture_hipStreamGetAttribute(hipStream_t stream, hipStreamAtt
   return r;
 }
 
-// Generated shim
-static hipError_t capture_hipModuleLoadFatBinary(hipModule_t* module, const void* fatbin) {
-  hipError_t r = g_real_table.hipModuleLoadFatBinary_fn(module, fatbin);
-  if (r == hipSuccess) {
-    hrr_args_hipModuleLoadFatBinary a{};
-    a.ret         = static_cast<int32_t>(r);
-    a.fatbin = reinterpret_cast<uint64_t>(fatbin);
-    if (module) a.module = reinterpret_cast<uint64_t>(*module);
-    hrr_cap::writer::write_event_raw(HRR_API_HIPMODULELOADFATBINARY, &a.hdr, sizeof(a));
-  }
-  return r;
-}
 
 // Generated shim
 static hipError_t capture_hipMemcpyBatchAsync(void** dsts, void** srcs, size_t* sizes, size_t count, hipMemcpyAttributes* attrs, size_t* attrsIdxs, size_t numAttrs, size_t* failIdx, hipStream_t stream) {
@@ -7358,20 +7135,35 @@ static hipError_t capture_hipMipmappedArrayGetMemoryRequirements(hipArrayMemoryR
 // ============================================================
 
 // Forward declarations for hand-written shims (non-static in hip_capture.cpp)
+extern hipError_t capture_hipConfigureCall(dim3 gridDim, dim3 blockDim, size_t sharedMem, hipStream_t stream);
+extern hipError_t capture_hipDrvMemcpy2DUnaligned(const hip_Memcpy2D* pCopy);
+extern hipError_t capture_hipExtLaunchKernel(const void* function_address, dim3 numBlocks, dim3 dimBlocks, void** args, size_t sharedMemBytes, hipStream_t stream, hipEvent_t startEvent, hipEvent_t stopEvent, int flags);
+extern hipError_t capture_hipExtLaunchMultiKernelMultiDevice(hipLaunchParams* launchParamsList, int numDevices, unsigned int flags);
 extern hipError_t capture_hipHostRegister(void* hostPtr, size_t sizeBytes, unsigned int flags);
 extern hipError_t capture_hipHostUnregister(void* hostPtr);
 extern hipError_t capture_hipLaunchByPtr(const void* func);
+extern hipError_t capture_hipLaunchCooperativeKernel(const void* f, dim3 gridDim, dim3 blockDimX, void** kernelParams, unsigned int sharedMemBytes, hipStream_t stream);
+extern hipError_t capture_hipLaunchCooperativeKernelMultiDevice(hipLaunchParams* launchParamsList, int numDevices, unsigned int flags);
 extern hipError_t capture_hipLaunchKernel(const void* function_address, dim3 numBlocks, dim3 dimBlocks, void** args, size_t sharedMemBytes, hipStream_t stream);
 extern hipError_t capture_hipMemcpy(void* dst, const void* src, size_t sizeBytes, hipMemcpyKind kind);
 extern hipError_t capture_hipMemcpyAsync(void* dst, const void* src, size_t sizeBytes, hipMemcpyKind kind, hipStream_t stream);
 extern hipError_t capture_hipMemcpyHtoD(hipDeviceptr_t dst, const void* src, size_t sizeBytes);
 extern hipError_t capture_hipMemcpyHtoDAsync(hipDeviceptr_t dst, const void* src, size_t sizeBytes, hipStream_t stream);
+extern hipError_t capture_hipMemcpyParam2D(const hip_Memcpy2D* pCopy);
+extern hipError_t capture_hipMemcpyParam2DAsync(const hip_Memcpy2D* pCopy, hipStream_t stream);
 extern hipError_t capture_hipMemcpyWithStream(void* dst, const void* src, size_t sizeBytes, hipMemcpyKind kind, hipStream_t stream);
+extern hipError_t capture_hipModuleGetFunction(hipFunction_t* function, hipModule_t module, const char* kname);
+extern hipError_t capture_hipModuleLaunchCooperativeKernel(hipFunction_t f, unsigned int gridDimX, unsigned int gridDimY, unsigned int gridDimZ, unsigned int blockDimX, unsigned int blockDimY, unsigned int blockDimZ, unsigned int sharedMemBytes, hipStream_t stream, void** kernelParams);
 extern hipError_t capture_hipModuleLaunchKernel(hipFunction_t f, unsigned int gridDimX, unsigned int gridDimY, unsigned int gridDimZ, unsigned int blockDimX, unsigned int blockDimY, unsigned int blockDimZ, unsigned int sharedMemBytes, hipStream_t stream, void** kernelParams, void** extra);
 extern hipError_t capture_hipModuleLoad(hipModule_t* module, const char* fname);
 extern hipError_t capture_hipModuleLoadData(hipModule_t* module, const void* image);
 extern hipError_t capture_hipModuleLoadDataEx(hipModule_t* module, const void* image, unsigned int numOptions, hipJitOption* options, void** optionValues);
+extern hipError_t capture_hipSetupArgument(const void* arg, size_t size, size_t offset);
+extern hipError_t capture_hipLaunchCooperativeKernel_spt(const void* f, dim3 gridDim, dim3 blockDim, void** kernelParams, uint32_t sharedMemBytes, hipStream_t hStream);
 extern hipError_t capture_hipExtModuleLaunchKernel(hipFunction_t f, uint32_t globalWorkSizeX, uint32_t globalWorkSizeY, uint32_t globalWorkSizeZ, uint32_t localWorkSizeX, uint32_t localWorkSizeY, uint32_t localWorkSizeZ, size_t sharedMemBytes, hipStream_t hStream, void** kernelParams, void** extra, hipEvent_t startEvent, hipEvent_t stopEvent, uint32_t flags);
+extern hipError_t capture_hipDrvLaunchKernelEx(const HIP_LAUNCH_CONFIG* config, hipFunction_t f, void** params, void** extra);
+extern hipError_t capture_hipModuleLoadFatBinary(hipModule_t* module, const void* fatbin);
+extern hipError_t capture___hipPushCallConfiguration(dim3 gridDim, dim3 blockDim, size_t sharedMem, hipStream_t stream);
 extern void** capture___hipRegisterFatBinary(const void* data);
 
 void hip_capture_build_table() {

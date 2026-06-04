@@ -39,6 +39,8 @@
 // ROCclr kernel introspection
 #include "device/devkernel.hpp"    // amd::Kernel, KernelParameterDescriptor
 #include "platform/kernel.hpp"     // amd::KernelSignature
+#include "platform/memory.hpp"     // amd::Memory::getSize()
+#include "device/device.hpp"       // amd::MemObjMap::FindMemObj()
 #include "opencl/amdocl/cl_kernel.h"  // T_POINTER enum
 
 // Fat binary format structs (ClangOffloadBundleUncompressedHeader, etc.)
@@ -71,11 +73,16 @@ std::atomic<bool>        g_table_built{false};  // guard for hip_capture_build_t
 HipCompilerDispatchTable g_real_compiler_table{};
 std::atomic<bool>        g_compiler_installed{false};  // guard for hip_capture_build_compiler_table()
 
-// TLS dims saved by __hipPushCallConfiguration for use by hipLaunchByPtr
+// TLS dims saved by __hipPushCallConfiguration / hipConfigureCall for use by
+// hipLaunchByPtr and the <<< >>> (hipLaunchKernel) path.
 static thread_local dim3        g_pushed_grid{};
 static thread_local dim3        g_pushed_block{};
 static thread_local size_t      g_pushed_shared{};
 static thread_local hipStream_t g_pushed_stream{};
+
+// TLS kernarg buffer accumulated by hipSetupArgument calls; consumed and
+// cleared by capture_hipLaunchByPtr.
+static thread_local std::vector<uint8_t> g_setuparg_buf{};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,6 +95,30 @@ bool hip_capture_enabled() {
 
 const char* hip_capture_output_dir() {
   return HIP_HRR_CAPTURE_OUTPUT;
+}
+
+// Parsed once at first call; the ROCclr flag is a c-string so we map to int.
+// "timeline"=0, "inputs"=1, "full"=2.  Unknown values warn and fall back to
+// timeline so a typo never silently changes archive contents.
+int hip_capture_record_mode() {
+  static const int cached = []() -> int {
+    const char* s = HIP_HRR_RECORD_MODE;
+    if (!s || !*s) return HRR_RECORD_TIMELINE;
+    if (std::strcmp(s, "timeline") == 0) return HRR_RECORD_TIMELINE;
+    if (std::strcmp(s, "inputs")   == 0) return HRR_RECORD_INPUTS;
+    if (std::strcmp(s, "full")     == 0) return HRR_RECORD_FULL;
+    LogPrintfWarning("[HRR capture] unknown HIP_HRR_RECORD_MODE='%s' "
+                     "(expected: timeline|inputs|full) — using timeline", s);
+    return HRR_RECORD_TIMELINE;
+  }();
+  return cached;
+}
+
+size_t hip_capture_max_snap_bytes() {
+  // 0 = unlimited.  Default 16 MiB matches hip_replay's HRR_MAX_SNAP_MB.
+  const uint32_t mb = HIP_HRR_MAX_SNAP_MB;
+  if (mb == 0) return 0;
+  return static_cast<size_t>(mb) * 1024u * 1024u;
 }
 
 // Parse the extra[] sentinel format for packed kernarg buffers.
@@ -158,18 +189,40 @@ static hrr_cap::Hash128 hash_for_program(const void* prog) {
 //   u32[3] block
 //   u32  shared_mem
 //   u16  num_args
-//   u16  num_snapshots (always 0)
+//   u16  num_snapshots         (HIP_HRR_RECORD_MODE=timeline: 0;
+//                               inputs: one direction=0 per pointer arg;
+//                               full: also one direction=1 per pointer arg)
 //   for each arg:
 //     u8   value_kind  (0=scalar, 1=pointer/gpu addr)
 //     u16  size
 //     u8[] data (size bytes)
-//   --- trailing (v3.1, optional — older archives stop after args) ---
+//   for each snapshot (num_snapshots entries — between args and full_kbuf;
+//                      wire-compatible with hip_replay's snap_record_t):
+//     u64  ptr_handle  (recorded device pointer)
+//     u64  offset      (always 0 — snapshots start at the alloc base)
+//     u64  length      (bytes captured; clamped by HIP_HRR_MAX_SNAP_MB)
+//     u64  hash_lo
+//     u64  hash_hi
+//     u8   direction   (0=input/pre-launch, 1=output/post-launch)
+//   --- trailing (v3.1, optional — older archives stop after args+snaps) ---
 //   u32  full_kbuf_size (0 = not captured; non-zero when extra[] was used)
 //   u8[] full_kbuf      (full_kbuf_size bytes — the entire packed kernarg
 //                        buffer, including implicit/hidden args the rocclr
 //                        signature does not enumerate; required for correct
 //                        replay of MLIR/SP3/etc. kernels launched via extra[])
 // ---------------------------------------------------------------------------
+
+// One per-kernel buffer snapshot — built by capture_buffer_snapshot() and
+// emitted into the kernel-launch payload. Wire layout matches hip_replay's
+// snap_record_t (33 bytes packed, written field-by-field).
+struct SnapshotRecord {
+  uint64_t ptr_handle;
+  uint64_t offset;
+  uint64_t length;
+  uint64_t hash_lo;
+  uint64_t hash_hi;
+  uint8_t  direction;
+};
 
 static void serialize_kernel_launch(
     const char*                 kernel_name,
@@ -182,7 +235,9 @@ static void serialize_kernel_launch(
     const amd::KernelSignature& sig,
     void**                      kernel_params,
     const void*                 kbuf,
-    size_t                      ksz)
+    size_t                      ksz,
+    const std::vector<SnapshotRecord>& snapshots,
+    hrr_api_id_t                api_id = HRR_API_HIPMODULELAUNCHKERNEL)
 {
   // Reserve space for hrr_event_header at front; payload body follows.
   std::vector<uint8_t> payload(sizeof(hrr_event_header), 0);
@@ -225,7 +280,9 @@ static void serialize_kernel_launch(
   for (uint32_t i = 0; i < n_all; i++)
     if (!sig.at(i).info_.hidden_) num_args++;
   push_u16(num_args);
-  push_u16(0);  // num_snapshots
+  // num_snapshots — 0 in timeline mode; one record per pointer arg per
+  // direction in inputs/full modes (the actual records follow the args).
+  push_u16(static_cast<uint16_t>(snapshots.size()));
 
   if (kbuf && ksz > 0) {
     const auto* buf_bytes = static_cast<const uint8_t*>(kbuf);
@@ -256,6 +313,18 @@ static void serialize_kernel_launch(
     }
   }
 
+  // Buffer snapshots — between args and full_kbuf trailer.  Layout matches
+  // hip_replay's snap_record_t (33 bytes per record, no padding).  Direction
+  // 0 = pre-launch (input restore on replay); 1 = post-launch (--verify).
+  for (const auto& s : snapshots) {
+    push_u64(s.ptr_handle);
+    push_u64(s.offset);
+    push_u64(s.length);
+    push_u64(s.hash_lo);
+    push_u64(s.hash_hi);
+    push_u8 (s.direction);
+  }
+
   // Trailing full-kbuf field (v3.1).  Appended even when ksz == 0 so the
   // playback can unambiguously distinguish "extra[] mode with kbuf captured"
   // from "kernelParams[] mode, no kbuf available".  Older readers stop
@@ -279,18 +348,179 @@ static void serialize_kernel_launch(
                      payload.size());
     payload.resize(UINT16_MAX);
   }
-  hrr_cap::writer::write_event_raw(HRR_API_HIPMODULELAUNCHKERNEL,
+  hrr_cap::writer::write_event_raw(api_id,
                                    reinterpret_cast<hrr_event_header*>(payload.data()),
                                    static_cast<uint16_t>(payload.size()));
 }
 
+// Maximum number of unique pointer-arg handles we'll snapshot per kernel.
+// Matches hip_replay's MAX_SNAP_PTRS — kernels with more pointer args than
+// this just have their excess args un-snapshotted (the rest still works).
+static constexpr size_t kMaxSnapPtrs = 16;
+
+// Walk the kernel signature and harvest unique device-pointer handles from
+// either the packed kernarg buffer (extra[] launches) or the kernelParams[]
+// array.  Hidden args are skipped.  Used by both pre- and post-launch
+// snapshot collection so the two sweeps target the exact same pointer set.
+static void collect_pointer_args(
+    const amd::KernelSignature& sig,
+    void**       kernel_params,
+    const void*  kbuf, size_t ksz,
+    std::vector<uint64_t>& out)
+{
+  out.clear();
+  const auto push_unique = [&](uint64_t h) {
+    if (h == 0 || out.size() >= kMaxSnapPtrs) return;
+    for (uint64_t x : out) if (x == h) return;
+    out.push_back(h);
+  };
+  uint32_t n_all = sig.numParametersAll();
+  uint32_t param_idx = 0;
+  for (uint32_t i = 0; i < n_all; i++) {
+    const auto& d = sig.at(i);
+    if (d.info_.hidden_) continue;
+    if (d.type_ == T_POINTER) {
+      uint64_t h = 0;
+      if (kbuf && ksz > 0) {
+        if (d.offset_ + 8 <= ksz)
+          std::memcpy(&h, static_cast<const uint8_t*>(kbuf) + d.offset_, 8);
+      } else if (kernel_params && kernel_params[param_idx]) {
+        std::memcpy(&h, kernel_params[param_idx], 8);
+      }
+      push_unique(h);
+    }
+    param_idx++;  // advances per visible arg (matches serialize_kernel_launch)
+  }
+}
+
+// D2H-read a single allocation containing `handle`, write it as a content-
+// addressed blob, and fill out a SnapshotRecord.  Returns false when the
+// pointer doesn't resolve to a runtime-tracked allocation (foreign sysmem,
+// graph-managed VAs we don't follow, etc.) — the caller silently drops it.
+//
+// `should_sync` selects the sync flavour: pre-launch direction=0 syncs the
+// submission stream (so the buffer reflects everything submitted before the
+// kernel we're about to launch); post-launch direction=1 syncs the same
+// stream to flush the kernel's writes.  hipStreamSynchronize on stream==null
+// degrades to a device sync, which matches the AMD HIP runtime semantics.
+static bool capture_buffer_snapshot(uint64_t handle, uint8_t direction,
+                                    hipStream_t stream,
+                                    size_t max_snap_bytes,
+                                    SnapshotRecord& out)
+{
+  if (handle == 0) return false;
+  void* dev_ptr = reinterpret_cast<void*>(static_cast<uintptr_t>(handle));
+
+  size_t offset = 0;
+  amd::Memory* mem = amd::MemObjMap::FindMemObj(dev_ptr, &offset, nullptr);
+  if (!mem) return false;
+
+  const size_t alloc_sz = mem->getSize();
+  if (offset >= alloc_sz) return false;
+  size_t snap_sz = alloc_sz - offset;
+  if (max_snap_bytes > 0 && snap_sz > max_snap_bytes)
+    snap_sz = max_snap_bytes;
+  if (snap_sz == 0) return false;
+
+  // Sync first so the captured bytes reflect a stable point in time.
+  // Both directions need this: pre-launch wants pending writes drained;
+  // post-launch wants the kernel's writes drained.
+  hipError_t e = (stream)
+      ? g_real_table.hipStreamSynchronize_fn(stream)
+      : g_real_table.hipDeviceSynchronize_fn();
+  if (e != hipSuccess) {
+    LogPrintfWarning("[HRR capture] snapshot dir=%u sync failed (%d) — skip",
+                     direction, e);
+    return false;
+  }
+
+  std::vector<uint8_t> host_buf(snap_sz);
+  e = g_real_table.hipMemcpy_fn(host_buf.data(), dev_ptr,
+                                snap_sz, hipMemcpyDeviceToHost);
+  if (e != hipSuccess) {
+    LogPrintfWarning("[HRR capture] snapshot dir=%u D2H failed (%d) — skip",
+                     direction, e);
+    return false;
+  }
+
+  hrr_cap::Hash128 h = hrr_cap::writer::write_blob(host_buf.data(), snap_sz);
+  out.ptr_handle = handle;
+  out.offset     = 0;
+  out.length     = static_cast<uint64_t>(snap_sz);
+  out.hash_lo    = h.lo;
+  out.hash_hi    = h.hi;
+  out.direction  = direction;
+  return true;
+}
+
+// Pre-launch snapshot sweep.  No-op outside inputs/full mode.  Returns a
+// vector that may be empty (timeline mode) or smaller than the pointer-arg
+// count (untrackable pointers were dropped).  Used by the launch shims to
+// build the snapshot list BEFORE the real call so direction=0 records
+// reflect the buffer state at kernel-entry time.
+static std::vector<SnapshotRecord> capture_pre_launch_snapshots(
+    const amd::KernelSignature& sig,
+    void**      kernel_params,
+    const void* kbuf, size_t ksz,
+    hipStream_t stream)
+{
+  std::vector<SnapshotRecord> out;
+  if (hip_capture_record_mode() == HRR_RECORD_TIMELINE) return out;
+
+  std::vector<uint64_t> handles;
+  collect_pointer_args(sig, kernel_params, kbuf, ksz, handles);
+  if (handles.empty()) return out;
+
+  const size_t cap = hip_capture_max_snap_bytes();
+  out.reserve(handles.size());
+  for (uint64_t h : handles) {
+    SnapshotRecord r{};
+    if (capture_buffer_snapshot(h, /*direction=*/0, stream, cap, r))
+      out.push_back(r);
+  }
+  return out;
+}
+
+// Post-launch snapshot sweep.  Only fires in full mode; appends direction=1
+// records to `snaps` so the playback's --verify can byte-compare actual vs.
+// expected output state.  Same pointer set as pre-launch — that's how
+// hip_replay's --verify-outputs-only filtering distinguishes pure outputs
+// from buffers whose pre-state already matched (read-only inputs).
+static void capture_post_launch_snapshots(
+    const amd::KernelSignature& sig,
+    void**      kernel_params,
+    const void* kbuf, size_t ksz,
+    hipStream_t stream,
+    std::vector<SnapshotRecord>& snaps)
+{
+  if (hip_capture_record_mode() != HRR_RECORD_FULL) return;
+
+  std::vector<uint64_t> handles;
+  collect_pointer_args(sig, kernel_params, kbuf, ksz, handles);
+  if (handles.empty()) return;
+
+  const size_t cap = hip_capture_max_snap_bytes();
+  for (uint64_t h : handles) {
+    SnapshotRecord r{};
+    if (capture_buffer_snapshot(h, /*direction=*/1, stream, cap, r))
+      snaps.push_back(r);
+  }
+}
+
+// record_launch — finalize a kernel-launch event.  Called AFTER the real
+// HIP launch returned hipSuccess.  `pre_snaps` is moved in: it was built
+// before the real call (so direction=0 reflects the input bytes the kernel
+// actually consumed) and is augmented here with direction=1 records when
+// HIP_HRR_RECORD_MODE=full.
 static void record_launch(
     hipFunction_t f,
     unsigned gx, unsigned gy, unsigned gz,
     unsigned bx, unsigned by, unsigned bz,
     unsigned shared_mem,
     hipStream_t stream,
-    void** kernel_params, void** extra)
+    void** kernel_params, void** extra,
+    std::vector<SnapshotRecord> pre_snaps = {},
+    hrr_api_id_t api_id = HRR_API_HIPMODULELAUNCHKERNEL)
 {
   if (!hip_capture_enabled()) return;
   amd::Kernel* kernel = hip::asKernel(f);
@@ -303,6 +533,46 @@ static void record_launch(
   if (!kernel_params && extra)
     parse_kernel_extra(extra, kbuf, ksz);
 
+  // Detect launches where the app under-provisioned HIP_LAUNCH_PARAM_BUFFER_SIZE
+  // — the captured kbuf is too small to hold the kernel's hidden args (hidden_
+  // block_count_*, hidden_group_size_*, hidden_remainder_*, hidden_global_offset_*,
+  // etc.).  The GPU instruction stream still issues loads at those high offsets,
+  // so it ends up reading bytes off the end of the allocated kbuf — typically
+  // whatever the previous launch left in the kernarg ring buffer, or zero.  The
+  // launch may run to completion either way, but its output is undefined and
+  // non-reproducible across runs.  This is an upstream bug in whatever code is
+  // calling hipModuleLaunchKernel (often a JIT launcher template that sized the
+  // buffer from the visible arg list only).  HRR records exactly the bytes the
+  // app passed and lets replay surface the issue via --verify.  Warned once
+  // per kernel name so a busy app doesn't flood the log.
+  if (kbuf && ksz > 0) {
+    size_t expected = 0;
+    uint32_t n_all = sig.numParametersAll();
+    for (uint32_t i = 0; i < n_all; i++) {
+      const auto& d = sig.at(i);
+      size_t end = static_cast<size_t>(d.offset_) + static_cast<size_t>(d.size_);
+      if (end > expected) expected = end;
+    }
+    if (ksz < expected) {
+      static std::mutex                       warn_mu;
+      static std::unordered_set<std::string>  warned;
+      std::lock_guard<std::mutex> lk(warn_mu);
+      if (warned.insert(kernel->name()).second) {
+        LogPrintfWarning(
+            "[HRR capture] '%s': extra[] kernarg buffer is %zu bytes but kernel "
+            "descriptor declares kernarg_segment_byte_size=%zu — the upstream "
+            "caller under-provisioned HIP_LAUNCH_PARAM_BUFFER_SIZE.  The GPU "
+            "reads %zu bytes of hidden args off the end of the buffer "
+            "(undefined contents).  HRR captures the bytes as-is; fix the "
+            "upstream launcher to either use kernelParams[] or pad the "
+            "extra[] buffer to %zu bytes.",
+            kernel->name().c_str(),
+            static_cast<size_t>(ksz), expected,
+            expected - static_cast<size_t>(ksz), expected);
+      }
+    }
+  }
+
   // Tag the launch with the hash of the code object that owns this function,
   // so the playback can resolve the exact module — kernel-name alone is
   // ambiguous when MLIR/MIGraphX emits multiple shape-specialised copies
@@ -310,12 +580,38 @@ static void record_launch(
   const void* prog = static_cast<const void*>(&kernel->program());
   hrr_cap::Hash128 co_hash = hash_for_program(prog);
 
+  capture_post_launch_snapshots(sig, kernel_params, kbuf, ksz, stream, pre_snaps);
+
   serialize_kernel_launch(
       kernel->name().c_str(),
       co_hash.lo, co_hash.hi,
       gx, gy, gz, bx, by, bz,
       static_cast<uint32_t>(shared_mem),
-      stream, sig, kernel_params, kbuf, ksz);
+      stream, sig, kernel_params, kbuf, ksz,
+      pre_snaps, api_id);
+}
+
+// Helper: build a pre-launch snapshot list by inspecting f's signature.
+// Returns an empty vector in timeline mode without touching the GPU.
+static std::vector<SnapshotRecord> pre_launch_snapshots_from_f(
+    hipFunction_t f, void** kernel_params, void** extra,
+    hipStream_t stream)
+{
+  if (hip_capture_record_mode() == HRR_RECORD_TIMELINE)
+    return {};
+  amd::Kernel* kernel = hip::asKernel(f);
+  if (!kernel) return {};
+  const void* kbuf = nullptr;
+  size_t      ksz  = 0;
+  if (!kernel_params && extra) parse_kernel_extra(extra, kbuf, ksz);
+  // Pre-launch: only collect pointer args from the kbuf (extra[] path).
+  // Reading kernel_params[] before HIP validates the launch is unsafe —
+  // negative-test callers may pass an undersized array (e.g. {nullptr} for a
+  // kernel with multiple args), causing collect_pointer_args to walk off the
+  // end of the array and segfault.  Post-launch snapshots (after hipSuccess)
+  // ARE safe to use kernel_params because HIP validated the array first.
+  return capture_pre_launch_snapshots(kernel->signature(),
+                                      nullptr, kbuf, ksz, stream);
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +746,103 @@ hipError_t capture_hipMemcpyWithStream(void* dst, const void* src,
 }
 
 // ---------------------------------------------------------------------------
+// 2D memcpy shims — hipDrvMemcpy2DUnaligned / hipMemcpyParam2D[Async]
+// ---------------------------------------------------------------------------
+//
+// hip_Memcpy2D can carry H2D, D2H, or D2D copies depending on srcMemoryType /
+// dstMemoryType.  For H2D copies the source is a pitched host buffer; we
+// linearise the copied region (Height rows × WidthInBytes bytes) into a
+// contiguous blob so that the playback shim can restore the data without
+// needing the original pitch layout.
+
+static hrr_cap::Hash128 snapshot_2d_host_src(const hip_Memcpy2D* p) {
+  if (p->srcMemoryType != hipMemoryTypeHost || !p->srcHost ||
+      p->Height == 0 || p->WidthInBytes == 0)
+    return {0, 0};
+  const size_t pitch = p->srcPitch ? p->srcPitch : p->WidthInBytes;
+  const size_t total = p->Height * p->WidthInBytes;
+  std::vector<uint8_t> linear(total);
+  const char* base =
+      reinterpret_cast<const char*>(p->srcHost) +
+      p->srcY * pitch + p->srcXInBytes;
+  for (size_t row = 0; row < p->Height; ++row)
+    memcpy(linear.data() + row * p->WidthInBytes, base + row * pitch,
+           p->WidthInBytes);
+  return hrr_cap::writer::write_blob(linear.data(), total);
+}
+
+// Macro to populate the extra hip_Memcpy2D fields that the generator appended to
+// each 2D-copy args struct.  Each of the three structs has these fields at a
+// different offset (hipMemcpyParam2DAsync has an extra `stream` base field), so
+// we use a macro rather than a shared helper to avoid unsafe cross-struct casts.
+#define FILL_2D_EXTRA_FIELDS(a, p, h)                                  \
+  do {                                                                  \
+    (a).src_x_bytes  = static_cast<uint64_t>((p)->srcXInBytes);       \
+    (a).src_y        = static_cast<uint64_t>((p)->srcY);               \
+    (a).src_mem_type = static_cast<uint32_t>((p)->srcMemoryType);      \
+    (a).pad0         = 0;                                               \
+    (a).src_host     = reinterpret_cast<uint64_t>((p)->srcHost);       \
+    (a).src_device   = reinterpret_cast<uint64_t>((p)->srcDevice);     \
+    (a).src_array    = reinterpret_cast<uint64_t>((p)->srcArray);      \
+    (a).src_pitch    = static_cast<uint64_t>((p)->srcPitch);           \
+    (a).dst_x_bytes  = static_cast<uint64_t>((p)->dstXInBytes);       \
+    (a).dst_y        = static_cast<uint64_t>((p)->dstY);               \
+    (a).dst_mem_type = static_cast<uint32_t>((p)->dstMemoryType);      \
+    (a).pad1         = 0;                                               \
+    (a).dst_host     = reinterpret_cast<uint64_t>((p)->dstHost);       \
+    (a).dst_device   = reinterpret_cast<uint64_t>((p)->dstDevice);     \
+    (a).dst_array    = reinterpret_cast<uint64_t>((p)->dstArray);      \
+    (a).dst_pitch    = static_cast<uint64_t>((p)->dstPitch);           \
+    (a).width_bytes  = static_cast<uint64_t>((p)->WidthInBytes);       \
+    (a).height       = static_cast<uint64_t>((p)->Height);             \
+    (a).blob_hash_lo = (h).lo;                                         \
+    (a).blob_hash_hi = (h).hi;                                         \
+  } while (0)
+
+hipError_t capture_hipDrvMemcpy2DUnaligned(const hip_Memcpy2D* pCopy) {
+  hipError_t r = g_real_table.hipDrvMemcpy2DUnaligned_fn(pCopy);
+  if (r == hipSuccess && pCopy) {
+    hrr_cap::Hash128 h = snapshot_2d_host_src(pCopy);
+    hrr_args_hipDrvMemcpy2DUnaligned a{};
+    a.ret   = static_cast<int32_t>(r);
+    a.pCopy = reinterpret_cast<uint64_t>(pCopy);
+    FILL_2D_EXTRA_FIELDS(a, pCopy, h);
+    hrr_cap::writer::write_event_raw(HRR_API_HIPDRVMEMCPY2DUNALIGNED, &a.hdr, sizeof(a));
+  }
+  return r;
+}
+
+hipError_t capture_hipMemcpyParam2D(const hip_Memcpy2D* pCopy) {
+  hipError_t r = g_real_table.hipMemcpyParam2D_fn(pCopy);
+  if (r == hipSuccess && pCopy) {
+    hrr_cap::Hash128 h = snapshot_2d_host_src(pCopy);
+    hrr_args_hipMemcpyParam2D a{};
+    a.ret   = static_cast<int32_t>(r);
+    a.pCopy = reinterpret_cast<uint64_t>(pCopy);
+    FILL_2D_EXTRA_FIELDS(a, pCopy, h);
+    hrr_cap::writer::write_event_raw(HRR_API_HIPMEMCPYPARAM2D, &a.hdr, sizeof(a));
+  }
+  return r;
+}
+
+hipError_t capture_hipMemcpyParam2DAsync(const hip_Memcpy2D* pCopy,
+                                         hipStream_t stream) {
+  hipError_t r = g_real_table.hipMemcpyParam2DAsync_fn(pCopy, stream);
+  if (r == hipSuccess && pCopy) {
+    hrr_cap::Hash128 h = snapshot_2d_host_src(pCopy);
+    hrr_args_hipMemcpyParam2DAsync a{};
+    a.ret    = static_cast<int32_t>(r);
+    a.pCopy  = reinterpret_cast<uint64_t>(pCopy);
+    a.stream = reinterpret_cast<uint64_t>(stream);
+    FILL_2D_EXTRA_FIELDS(a, pCopy, h);
+    hrr_cap::writer::write_event_raw(HRR_API_HIPMEMCPYPARAM2DASYNC, &a.hdr, sizeof(a));
+  }
+  return r;
+}
+
+#undef FILL_2D_EXTRA_FIELDS
+
+// ---------------------------------------------------------------------------
 // Module shims
 // ---------------------------------------------------------------------------
 
@@ -470,10 +863,100 @@ static hrr_cap::Hash128 write_module_code_object(hipModule_t module) {
   return hrr_cap::writer::write_code_object(data, size);
 }
 
+// Infer the byte-size of a raw code-object image by sniffing its magic header.
+// Returns 0 when the format is unrecognised.
+//
+// Three formats accepted (all present in real ROCm workloads):
+//   1. Compressed fat bundle  — starts with "CCOB"; totalSize at byte 8
+//   2. Uncompressed fat bundle — starts with "__CLANG_OFFLOAD_BUNDLE__";
+//      walk all bundle entries, total = max(offset+size) over all entries
+//   3. ELF                     — starts with "\x7fELF"; total = e_shoff +
+//      e_shnum * e_shentsize (section headers are typically the last bytes)
+static size_t infer_image_size(const void* image) {
+  if (!image) return 0;
+  const auto* b = static_cast<const uint8_t*>(image);
+
+  // Compressed fat binary: "CCOB" magic + u16 version + u16 method + u32 totalSize
+  if (b[0]=='C' && b[1]=='C' && b[2]=='O' && b[3]=='B') {
+    uint32_t total = 0;
+    std::memcpy(&total, b + 8, 4);  // totalSize field
+    return static_cast<size_t>(total);
+  }
+
+  // Uncompressed fat binary: "__CLANG_OFFLOAD_BUNDLE__" magic
+  const char* kMagic = hip::symbols::kOffloadBundleUncompressedMagicStr;
+  const size_t kMagicLen = hip::symbols::kOffloadBundleUncompressedMagicStrSize - 1;
+  if (std::memcmp(b, kMagic, kMagicLen) == 0) {
+    uint64_t num = 0;
+    std::memcpy(&num, b + kMagicLen, 8);
+    const uint8_t* p = b + kMagicLen + 8;
+    size_t end = 0;
+    for (uint64_t i = 0; i < num; ++i) {
+      uint64_t offset = 0, size = 0, id_size = 0;
+      std::memcpy(&offset,  p,     8);
+      std::memcpy(&size,    p + 8, 8);
+      std::memcpy(&id_size, p + 16, 8);
+      size_t entry_end = static_cast<size_t>(offset + size);
+      if (entry_end > end) end = entry_end;
+      p += 24 + static_cast<size_t>(id_size);
+    }
+    return end;
+  }
+
+  // ELF: "\x7fELF" magic (64-bit LE assumed — all AMD code objects are ELF64 LE)
+  if (b[0]==0x7f && b[1]=='E' && b[2]=='L' && b[3]=='F') {
+    uint64_t shoff = 0; uint16_t shentsize = 0, shnum = 0;
+    std::memcpy(&shoff,    b + 40, 8);  // e_shoff
+    std::memcpy(&shentsize, b + 58, 2); // e_shentsize
+    std::memcpy(&shnum,    b + 60, 2);  // e_shnum
+    if (shoff && shentsize && shnum)
+      return static_cast<size_t>(shoff) + shentsize * shnum;
+  }
+
+  return 0;  // unrecognised format
+}
+
+// When write_module_code_object fails (e.g. lazy-compilation not yet complete),
+// fall back to hashing the raw input image.  infer_image_size sniffs the format
+// to determine the byte count; if that too fails the hash stays {0,0} and the
+// playback shim will skip the module gracefully rather than aborting.
+static hrr_cap::Hash128 write_module_or_image(hipModule_t module,
+                                               const void* image) {
+  hrr_cap::Hash128 h = write_module_code_object(module);
+  if (!h.lo && !h.hi && image) {
+    size_t sz = infer_image_size(image);
+    if (sz > 0)
+      h = hrr_cap::writer::write_code_object(image, sz);
+    else
+      LogPrintfWarning("[HRR capture] hipModuleLoad*: could not infer image size"
+                       " — code object not snapshotted");
+  }
+  return h;
+}
+
+hipError_t capture_hipModuleGetFunction(hipFunction_t* function,
+                                        hipModule_t module,
+                                        const char* kname) {
+  hipError_t r = g_real_table.hipModuleGetFunction_fn(function, module, kname);
+  if (r == hipSuccess && kname && function) {
+    size_t name_len = strlen(kname) + 1;
+    hrr_cap::Hash128 h = hrr_cap::writer::write_blob(kname, name_len);
+    hrr_args_hipModuleGetFunction a{};
+    a.ret          = static_cast<int32_t>(r);
+    a.function     = reinterpret_cast<uint64_t>(*function);
+    a.module       = reinterpret_cast<uint64_t>(module);
+    a.kname        = reinterpret_cast<uint64_t>(kname);
+    a.fname_hash_lo = h.lo;
+    a.fname_hash_hi = h.hi;
+    hrr_cap::writer::write_event_raw(HRR_API_HIPMODULEGETFUNCTION, &a.hdr, sizeof(a));
+  }
+  return r;
+}
+
 hipError_t capture_hipModuleLoadData(hipModule_t* module, const void* image) {
   hipError_t r = g_real_table.hipModuleLoadData_fn(module, image);
   if (r == hipSuccess) {
-    hrr_cap::Hash128 h = write_module_code_object(*module);
+    hrr_cap::Hash128 h = write_module_or_image(*module, image);
     remember_module_hash(*module, h);
     hrr_args_hipModuleLoadData a{};
     a.ret        = static_cast<int32_t>(r);
@@ -494,7 +977,7 @@ hipError_t capture_hipModuleLoadDataEx(hipModule_t* module, const void* image,
   hipError_t r = g_real_table.hipModuleLoadDataEx_fn(
       module, image, numOptions, options, optionValues);
   if (r == hipSuccess) {
-    hrr_cap::Hash128 h = write_module_code_object(*module);
+    hrr_cap::Hash128 h = write_module_or_image(*module, image);
     remember_module_hash(*module, h);
     hrr_args_hipModuleLoadDataEx a{};
     a.ret          = static_cast<int32_t>(r);
@@ -507,6 +990,23 @@ hipError_t capture_hipModuleLoadDataEx(hipModule_t* module, const void* image,
     a.co_hash_hi   = h.hi;
     a.module_id    = 0;
     hrr_cap::writer::write_event_raw(HRR_API_HIPMODULELOADDATAEX, &a.hdr, sizeof(a));
+  }
+  return r;
+}
+
+hipError_t capture_hipModuleLoadFatBinary(hipModule_t* module, const void* fatbin) {
+  hipError_t r = g_real_table.hipModuleLoadFatBinary_fn(module, fatbin);
+  if (r == hipSuccess && module) {
+    hrr_cap::Hash128 h = write_module_or_image(*module, fatbin);
+    remember_module_hash(*module, h);
+    hrr_args_hipModuleLoadFatBinary a{};
+    a.ret        = static_cast<int32_t>(r);
+    a.module     = reinterpret_cast<uint64_t>(*module);
+    a.fatbin     = reinterpret_cast<uint64_t>(fatbin);
+    a.co_hash_lo = h.lo;
+    a.co_hash_hi = h.hi;
+    a.module_id  = 0;
+    hrr_cap::writer::write_event_raw(HRR_API_HIPMODULELOADFATBINARY, &a.hdr, sizeof(a));
   }
   return r;
 }
@@ -556,6 +1056,10 @@ hipError_t capture_hipModuleLaunchKernel(
     unsigned int blockDimX, unsigned int blockDimY, unsigned int blockDimZ,
     unsigned int sharedMemBytes, hipStream_t stream,
     void** kernelParams, void** extra) {
+  // Pre-launch snapshots (no-op outside inputs/full mode).  Must happen
+  // BEFORE the real launch so direction=0 captures the bytes the kernel
+  // actually consumes, not post-launch outputs.
+  auto pre = pre_launch_snapshots_from_f(f, kernelParams, extra, stream);
   hipError_t r = g_real_table.hipModuleLaunchKernel_fn(
       f, gridDimX, gridDimY, gridDimZ,
          blockDimX, blockDimY, blockDimZ,
@@ -563,7 +1067,8 @@ hipError_t capture_hipModuleLaunchKernel(
   if (r == hipSuccess) {
     record_launch(f, gridDimX, gridDimY, gridDimZ,
                      blockDimX, blockDimY, blockDimZ,
-                  sharedMemBytes, stream, kernelParams, extra);
+                  sharedMemBytes, stream, kernelParams, extra,
+                  std::move(pre));
   }
   return r;
 }
@@ -575,6 +1080,7 @@ hipError_t capture_hipExtModuleLaunchKernel(
     size_t sharedMemBytes, hipStream_t stream,
     void** kernelParams, void** extra,
     hipEvent_t startEvent, hipEvent_t stopEvent, uint32_t flags) {
+  auto pre = pre_launch_snapshots_from_f(f, kernelParams, extra, stream);
   hipError_t r = g_real_table.hipExtModuleLaunchKernel_fn(
       f, globalWorkSizeX, globalWorkSizeY, globalWorkSizeZ,
          localWorkSizeX,  localWorkSizeY,  localWorkSizeZ,
@@ -595,7 +1101,86 @@ hipError_t capture_hipExtModuleLaunchKernel(
                   to_grid(globalWorkSizeY, localWorkSizeY),
                   to_grid(globalWorkSizeZ, localWorkSizeZ),
                   localWorkSizeX,  localWorkSizeY,  localWorkSizeZ,
-                  static_cast<unsigned>(sharedMemBytes), stream, kernelParams, extra);
+                  static_cast<unsigned>(sharedMemBytes), stream, kernelParams, extra,
+                  std::move(pre));
+  }
+  return r;
+}
+
+// ---------------------------------------------------------------------------
+// Old HIP C launch API: hipConfigureCall → hipSetupArgument×N → hipLaunchByPtr
+// ---------------------------------------------------------------------------
+// The generated shims for hipConfigureCall and __hipPushCallConfiguration write
+// events but do NOT update the TLS dims that capture_hipLaunchByPtr reads.
+// The generated shim for hipSetupArgument stores only the stale arg pointer, not
+// the bytes it points to — causing a segfault on playback.
+//
+// Fix:
+//   capture_hipConfigureCall / capture___hipPushCallConfiguration:
+//     Write the event AND update g_pushed_* so capture_hipLaunchByPtr has the
+//     correct grid/block/shared/stream.
+//   capture_hipSetupArgument:
+//     Copy size bytes from arg into g_setuparg_buf at the given offset so the
+//     arg bytes accumulate correctly before hipLaunchByPtr.
+//   capture_hipLaunchByPtr (existing, updated below):
+//     Passes g_setuparg_buf as kbuf to serialize_kernel_launch so the args end
+//     up in the kernel launch event payload.
+
+hipError_t capture_hipConfigureCall(dim3 gridDim, dim3 blockDim,
+                                    size_t sharedMem, hipStream_t stream) {
+  hipError_t r = g_real_table.hipConfigureCall_fn(gridDim, blockDim, sharedMem, stream);
+  if (r == hipSuccess) {
+    g_pushed_grid   = gridDim;
+    g_pushed_block  = blockDim;
+    g_pushed_shared = sharedMem;
+    g_pushed_stream = stream;
+    g_setuparg_buf.clear();
+    hrr_args_hipConfigureCall a{};
+    a.ret        = static_cast<int32_t>(r);
+    a.gridDim_x  = gridDim.x;  a.gridDim_y  = gridDim.y;  a.gridDim_z  = gridDim.z;
+    a.blockDim_x = blockDim.x; a.blockDim_y = blockDim.y; a.blockDim_z = blockDim.z;
+    a.sharedMem  = static_cast<decltype(a.sharedMem)>(sharedMem);
+    a.stream     = reinterpret_cast<uint64_t>(stream);
+    hrr_cap::writer::write_event_raw(HRR_API_HIPCONFIGURECALL, &a.hdr, sizeof(a));
+  }
+  return r;
+}
+
+hipError_t capture___hipPushCallConfiguration(dim3 gridDim, dim3 blockDim,
+                                              size_t sharedMem, hipStream_t stream) {
+  hipError_t r = g_real_compiler_table.__hipPushCallConfiguration_fn(
+      gridDim, blockDim, sharedMem, stream);
+  if (r == hipSuccess) {
+    g_pushed_grid   = gridDim;
+    g_pushed_block  = blockDim;
+    g_pushed_shared = sharedMem;
+    g_pushed_stream = stream;
+    hrr_args___hipPushCallConfiguration a{};
+    a.ret        = static_cast<int32_t>(r);
+    a.gridDim_x  = gridDim.x;  a.gridDim_y  = gridDim.y;  a.gridDim_z  = gridDim.z;
+    a.blockDim_x = blockDim.x; a.blockDim_y = blockDim.y; a.blockDim_z = blockDim.z;
+    a.sharedMem  = static_cast<decltype(a.sharedMem)>(sharedMem);
+    a.stream     = reinterpret_cast<uint64_t>(stream);
+    hrr_cap::writer::write_event_raw(HRR_API_HIPPUSHCALLCONFIGURATION, &a.hdr, sizeof(a));
+  }
+  return r;
+}
+
+hipError_t capture_hipSetupArgument(const void* arg, size_t size, size_t offset) {
+  hipError_t r = g_real_table.hipSetupArgument_fn(arg, size, offset);
+  if (r == hipSuccess && hip_capture_enabled()) {
+    // Grow the TLS buffer to cover offset+size and copy the argument bytes in.
+    size_t end = offset + size;
+    if (end > g_setuparg_buf.size())
+      g_setuparg_buf.resize(end, 0);
+    if (arg)
+      std::memcpy(g_setuparg_buf.data() + offset, arg, size);
+    hrr_args_hipSetupArgument a{};
+    a.ret    = static_cast<int32_t>(r);
+    a.arg    = reinterpret_cast<uint64_t>(arg);
+    a.size   = static_cast<decltype(a.size)>(size);
+    a.offset = static_cast<decltype(a.offset)>(offset);
+    hrr_cap::writer::write_event_raw(HRR_API_HIPSETUPARGUMENT, &a.hdr, sizeof(a));
   }
   return r;
 }
@@ -604,43 +1189,257 @@ hipError_t capture_hipLaunchKernel(const void* function_address,
                                            dim3 numBlocks, dim3 dimBlocks,
                                            void** args, size_t sharedMemBytes,
                                            hipStream_t stream) {
+  // Resolve the host-stub address to a real hipFunction_t once up front so
+  // we can do the pre-launch snapshot BEFORE the real call.  If resolution
+  // fails we still launch normally (matching pre-snapshot behaviour) and
+  // skip recording — kernel-name-less launches aren't meaningful for replay.
+  hipFunction_t f_pre = nullptr;
+  std::vector<SnapshotRecord> pre;
+  if (hip_capture_enabled() && g_real_table.hipGetFuncBySymbol_fn &&
+      g_real_table.hipGetFuncBySymbol_fn(&f_pre, function_address) == hipSuccess &&
+      f_pre) {
+    pre = pre_launch_snapshots_from_f(f_pre, args, nullptr, stream);
+  }
   hipError_t r = g_real_table.hipLaunchKernel_fn(
       function_address, numBlocks, dimBlocks, args, sharedMemBytes, stream);
-  if (r == hipSuccess && hip_capture_enabled()) {
-    // function_address is a host stub pointer, not hipFunction_t — resolve via dispatch table
-    hipFunction_t f = nullptr;
-    if (g_real_table.hipGetFuncBySymbol_fn &&
-        g_real_table.hipGetFuncBySymbol_fn(&f, function_address) == hipSuccess && f) {
-      record_launch(f,
-                    numBlocks.x, numBlocks.y, numBlocks.z,
-                    dimBlocks.x, dimBlocks.y, dimBlocks.z,
-                    static_cast<unsigned>(sharedMemBytes), stream, args, nullptr);
-    }
+  if (r == hipSuccess && f_pre) {
+    record_launch(f_pre,
+                  numBlocks.x, numBlocks.y, numBlocks.z,
+                  dimBlocks.x, dimBlocks.y, dimBlocks.z,
+                  static_cast<unsigned>(sharedMemBytes), stream, args, nullptr,
+                  std::move(pre));
   }
   return r;
 }
 
-hipError_t capture_hipLaunchByPtr(const void* func) {
-  hipError_t r = g_real_table.hipLaunchByPtr_fn(func);
-  if (r == hipSuccess && hip_capture_enabled()) {
-    // func is a host stub pointer — resolve to real hipFunction_t first
+hipError_t capture_hipExtLaunchKernel(const void* function_address,
+                                      dim3 numBlocks, dim3 dimBlocks,
+                                      void** args, size_t sharedMemBytes,
+                                      hipStream_t stream,
+                                      hipEvent_t startEvent,
+                                      hipEvent_t stopEvent,
+                                      int flags) {
+  // Identical to hipLaunchKernel — resolve the host stub to hipFunction_t,
+  // snapshot pointer args, call through, then record as a kernel-launch event.
+  // startEvent/stopEvent/flags are timing/hint parameters; they don't affect
+  // the kernel itself and are not needed for replay correctness.
+  hipFunction_t f_pre = nullptr;
+  std::vector<SnapshotRecord> pre;
+  if (hip_capture_enabled() && g_real_table.hipGetFuncBySymbol_fn &&
+      g_real_table.hipGetFuncBySymbol_fn(&f_pre, function_address) == hipSuccess &&
+      f_pre) {
+    pre = pre_launch_snapshots_from_f(f_pre, args, nullptr, stream);
+  }
+  hipError_t r = g_real_table.hipExtLaunchKernel_fn(
+      function_address, numBlocks, dimBlocks, args, sharedMemBytes,
+      stream, startEvent, stopEvent, flags);
+  if (r == hipSuccess && f_pre) {
+    record_launch(f_pre,
+                  numBlocks.x, numBlocks.y, numBlocks.z,
+                  dimBlocks.x, dimBlocks.y, dimBlocks.z,
+                  static_cast<unsigned>(sharedMemBytes), stream, args, nullptr,
+                  std::move(pre));
+  }
+  return r;
+}
+
+// ---------------------------------------------------------------------------
+// Multi-kernel multi-device launches
+// ---------------------------------------------------------------------------
+// hipLaunchParams[] contains per-device func (host pointer), args (stale
+// pointer), and stream (stale handle) — none capturable by the auto-generated
+// shim which only stores the pointer to the array, not its contents.
+//
+// Strategy: call the real function first, then walk the params array and call
+// record_launch() for each entry that has a resolvable kernel function.  Each
+// kernel is recorded as a standard HRR_API_HIPMODULELAUNCHKERNEL event, so
+// playback can replay them independently via replay_kernel_launch().  The
+// hipExtLaunchMultiKernelMultiDevice / hipLaunchCooperativeKernelMultiDevice
+// events themselves are no-ops at playback time (see NOOP_PLAYBACK_APIS).
+//
+// Note: pre-launch snapshots are not collected for these APIs because the
+// pre-launch state must be sampled before the real call, but we need the real
+// call to succeed before we know the kernels are worth recording.  Post-launch
+// snapshots are still collected by record_launch() (full-mode only).
+static void record_multi_device_launches(hipLaunchParams* params, int n) {
+  if (!hip_capture_enabled() || !params || n <= 0) return;
+  for (int i = 0; i < n; ++i) {
+    const hipLaunchParams& p = params[i];
+    if (!p.func) continue;
     hipFunction_t f = nullptr;
-    if (g_real_table.hipGetFuncBySymbol_fn &&
-        g_real_table.hipGetFuncBySymbol_fn(&f, func) == hipSuccess && f) {
-      amd::Kernel* kernel = hip::asKernel(f);
-      if (kernel) {
-        const amd::KernelSignature& sig = kernel->signature();
-        const void* prog = static_cast<const void*>(&kernel->program());
-        hrr_cap::Hash128 co_hash = hash_for_program(prog);
-        serialize_kernel_launch(
-            kernel->name().c_str(),
-            co_hash.lo, co_hash.hi,
-            g_pushed_grid.x, g_pushed_grid.y, g_pushed_grid.z,
-            g_pushed_block.x, g_pushed_block.y, g_pushed_block.z,
-            static_cast<uint32_t>(g_pushed_shared), g_pushed_stream,
-            sig, nullptr, nullptr, 0);
+    if (!g_real_table.hipGetFuncBySymbol_fn ||
+        g_real_table.hipGetFuncBySymbol_fn(&f, p.func) != hipSuccess || !f)
+      continue;
+    record_launch(f,
+                  p.gridDim.x,  p.gridDim.y,  p.gridDim.z,
+                  p.blockDim.x, p.blockDim.y, p.blockDim.z,
+                  static_cast<unsigned>(p.sharedMem),
+                  p.stream, p.args, nullptr);
+  }
+}
+
+hipError_t capture_hipExtLaunchMultiKernelMultiDevice(
+    hipLaunchParams* launchParamsList, int numDevices, unsigned int flags) {
+  hipError_t r = g_real_table.hipExtLaunchMultiKernelMultiDevice_fn(
+      launchParamsList, numDevices, flags);
+  if (r == hipSuccess)
+    record_multi_device_launches(launchParamsList, numDevices);
+  return r;
+}
+
+hipError_t capture_hipLaunchCooperativeKernelMultiDevice(
+    hipLaunchParams* launchParamsList, int numDevices, unsigned int flags) {
+  hipError_t r = g_real_table.hipLaunchCooperativeKernelMultiDevice_fn(
+      launchParamsList, numDevices, flags);
+  if (r == hipSuccess)
+    record_multi_device_launches(launchParamsList, numDevices);
+  return r;
+}
+
+hipError_t capture_hipLaunchByPtr(const void* func) {
+  // Resolve and pre-snapshot first.  We use the TLS dims pushed by
+  // __hipPushCallConfiguration to know the launch grid/block.
+  hipFunction_t f_pre = nullptr;
+  std::vector<SnapshotRecord> pre;
+  if (hip_capture_enabled() && g_real_table.hipGetFuncBySymbol_fn &&
+      g_real_table.hipGetFuncBySymbol_fn(&f_pre, func) == hipSuccess && f_pre) {
+    // hipLaunchByPtr has no kernel_params/extra — args sit in the runtime's
+    // ring-buffer kernarg.  collect_pointer_args sees nothing in that case
+    // and the snapshot list comes back empty, which is correct: we have
+    // nothing to introspect.  Left here for symmetry with other shims.
+    pre = pre_launch_snapshots_from_f(f_pre, nullptr, nullptr, g_pushed_stream);
+  }
+  // Snapshot the TLS arg buffer NOW (before real call) so pre-launch contents
+  // reflect what the kernel actually received.
+  const void* kbuf = g_setuparg_buf.empty() ? nullptr : g_setuparg_buf.data();
+  size_t      ksz  = g_setuparg_buf.size();
+
+  hipError_t r = g_real_table.hipLaunchByPtr_fn(func);
+  if (r == hipSuccess && f_pre) {
+    amd::Kernel* kernel = hip::asKernel(f_pre);
+    if (kernel) {
+      const amd::KernelSignature& sig = kernel->signature();
+      const void* prog = static_cast<const void*>(&kernel->program());
+      hrr_cap::Hash128 co_hash = hash_for_program(prog);
+      // Post-launch sweep (full mode only) — same as record_launch does.
+      capture_post_launch_snapshots(sig, nullptr, kbuf, ksz,
+                                    g_pushed_stream, pre);
+      serialize_kernel_launch(
+          kernel->name().c_str(),
+          co_hash.lo, co_hash.hi,
+          g_pushed_grid.x, g_pushed_grid.y, g_pushed_grid.z,
+          g_pushed_block.x, g_pushed_block.y, g_pushed_block.z,
+          static_cast<uint32_t>(g_pushed_shared), g_pushed_stream,
+          sig, nullptr, kbuf, ksz, pre);
+    }
+  }
+  // Clear the TLS arg buffer so it doesn't leak into the next launch.
+  g_setuparg_buf.clear();
+  return r;
+}
+
+hipError_t capture_hipLaunchCooperativeKernel(const void* f, dim3 gridDim,
+                                              dim3 blockDimX, void** kernelParams,
+                                              unsigned int sharedMemBytes,
+                                              hipStream_t stream) {
+  hipFunction_t f_pre = nullptr;
+  std::vector<SnapshotRecord> pre;
+  if (hip_capture_enabled() && g_real_table.hipGetFuncBySymbol_fn &&
+      g_real_table.hipGetFuncBySymbol_fn(&f_pre, f) == hipSuccess && f_pre) {
+    pre = pre_launch_snapshots_from_f(f_pre, kernelParams, nullptr, stream);
+  }
+  hipError_t r = g_real_table.hipLaunchCooperativeKernel_fn(
+      f, gridDim, blockDimX, kernelParams, sharedMemBytes, stream);
+  if (r == hipSuccess && f_pre) {
+    record_launch(f_pre,
+                  gridDim.x, gridDim.y, gridDim.z,
+                  blockDimX.x, blockDimX.y, blockDimX.z,
+                  sharedMemBytes, stream, kernelParams, nullptr,
+                  std::move(pre),
+                  HRR_API_HIPLAUNCHCOOPERATIVEKERNEL);
+  }
+  return r;
+}
+
+hipError_t capture_hipLaunchCooperativeKernel_spt(const void* f, dim3 gridDim,
+                                                  dim3 blockDim, void** kernelParams,
+                                                  uint32_t sharedMemBytes,
+                                                  hipStream_t hStream) {
+  hipFunction_t f_pre = nullptr;
+  std::vector<SnapshotRecord> pre;
+  if (hip_capture_enabled() && g_real_table.hipGetFuncBySymbol_fn &&
+      g_real_table.hipGetFuncBySymbol_fn(&f_pre, f) == hipSuccess && f_pre) {
+    pre = pre_launch_snapshots_from_f(f_pre, kernelParams, nullptr, hStream);
+  }
+  hipError_t r = g_real_table.hipLaunchCooperativeKernel_spt_fn(
+      f, gridDim, blockDim, kernelParams, sharedMemBytes, hStream);
+  if (r == hipSuccess && f_pre) {
+    record_launch(f_pre,
+                  gridDim.x, gridDim.y, gridDim.z,
+                  blockDim.x, blockDim.y, blockDim.z,
+                  sharedMemBytes, hStream, kernelParams, nullptr,
+                  std::move(pre),
+                  HRR_API_HIPLAUNCHCOOPERATIVEKERNEL_SPT);
+  }
+  return r;
+}
+
+// hipModuleLaunchCooperativeKernel — driver-level cooperative launch.
+// Like hipModuleLaunchKernel it takes a live hipFunction_t and kernelParams[].
+// Unlike hipModuleLaunchKernel it has no `extra[]` parameter, so we pass
+// nullptr for extra in the record_launch call.
+hipError_t capture_hipModuleLaunchCooperativeKernel(
+    hipFunction_t f,
+    unsigned int gridDimX, unsigned int gridDimY, unsigned int gridDimZ,
+    unsigned int blockDimX, unsigned int blockDimY, unsigned int blockDimZ,
+    unsigned int sharedMemBytes, hipStream_t stream, void** kernelParams) {
+  auto pre = pre_launch_snapshots_from_f(f, kernelParams, nullptr, stream);
+  hipError_t r = g_real_table.hipModuleLaunchCooperativeKernel_fn(
+      f, gridDimX, gridDimY, gridDimZ,
+         blockDimX, blockDimY, blockDimZ,
+      sharedMemBytes, stream, kernelParams);
+  if (r == hipSuccess) {
+    record_launch(f, gridDimX, gridDimY, gridDimZ,
+                     blockDimX, blockDimY, blockDimZ,
+                  sharedMemBytes, stream, kernelParams, /*extra=*/nullptr,
+                  std::move(pre),
+                  HRR_API_HIPMODULELAUNCHCOOPERATIVEKERNEL);
+  }
+  return r;
+}
+
+// hipDrvLaunchKernelEx — extensible driver launch with HIP_LAUNCH_CONFIG.
+// The config struct carries grid/block/shared/stream plus an optional attrs[]
+// array that may indicate a cooperative launch.  The generated shim passes the
+// stale config pointer straight to hipDrvLaunchKernelEx and also emits
+// (void**)&nullptr for params/extra — both cause error 400 at replay.
+//
+// Fix: extract the launch dimensions from config, detect cooperative mode via
+// attrs, and call record_launch() with the right api_id so replay_kernel_launch
+// uses the correct launch API.
+hipError_t capture_hipDrvLaunchKernelEx(const HIP_LAUNCH_CONFIG* config,
+                                        hipFunction_t f,
+                                        void** params, void** extra) {
+  hipStream_t stream = config ? config->hStream : nullptr;
+  auto pre = pre_launch_snapshots_from_f(f, params, extra, stream);
+  hipError_t r = g_real_table.hipDrvLaunchKernelEx_fn(config, f, params, extra);
+  if (r == hipSuccess && config) {
+    // Detect cooperative launch attribute.
+    hrr_api_id_t api_id = HRR_API_HIPDRVLAUNCHKERNELEX;
+    if (config->attrs && config->numAttrs > 0) {
+      for (unsigned i = 0; i < config->numAttrs; ++i) {
+        if (config->attrs[i].id == hipLaunchAttributeCooperative &&
+            config->attrs[i].val.cooperative) {
+          api_id = HRR_API_HIPMODULELAUNCHCOOPERATIVEKERNEL;
+          break;
+        }
       }
     }
+    record_launch(f,
+                  config->gridDimX, config->gridDimY, config->gridDimZ,
+                  config->blockDimX, config->blockDimY, config->blockDimZ,
+                  config->sharedMemBytes, stream,
+                  params, extra, std::move(pre), api_id);
   }
   return r;
 }

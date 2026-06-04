@@ -35,6 +35,21 @@ bool hip_capture_enabled();
 // Return the output directory from the env var
 const char* hip_capture_output_dir();
 
+// HRR snapshot recording mode (parsed from HIP_HRR_RECORD_MODE flag).
+// 0 = timeline (no per-kernel snapshots; baseline behaviour)
+// 1 = inputs   (pre-launch direction=0 snapshots — restored before each replay)
+// 2 = full     (also post-launch direction=1 snapshots — checked by --verify)
+enum HrrRecordMode : int {
+  HRR_RECORD_TIMELINE = 0,
+  HRR_RECORD_INPUTS   = 1,
+  HRR_RECORD_FULL     = 2,
+};
+int   hip_capture_record_mode();
+
+// Per-snapshot byte cap. 0 = no cap (NOT recommended for arena allocators —
+// the "snap size = rest-of-alloc" heuristic over-captures aggressively).
+size_t hip_capture_max_snap_bytes();
+
 // Snapshot real fn ptrs (must be called while live table holds real ptrs)
 void hip_capture_build_table();
 

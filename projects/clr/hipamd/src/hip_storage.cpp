@@ -13,6 +13,11 @@ hipError_t hipAmdFileRead(hipAmdFileHandle_t handle, void* devicePtr, uint64_t s
                        uint64_t* size_copied, int32_t* status) {
   HIP_INIT_VOID();
 
+  if (size == 0) {
+    // Skip if nothing needs reading.
+    return hipSuccess;
+  }
+
   auto* currentContext = hip::getCurrentDevice();
   amd::Device* device = nullptr;
 
@@ -41,6 +46,11 @@ hipError_t hipAmdFileWrite(hipAmdFileHandle_t handle, void* devicePtr, uint64_t 
                        uint64_t* size_copied, int32_t* status) {
   HIP_INIT_VOID();
 
+  if (size == 0) {
+    // Skip if nothing needs writing.
+    return hipSuccess;
+  }
+  
   auto* currentContext = hip::getCurrentDevice();
   amd::Device* device = nullptr;
 

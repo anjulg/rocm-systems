@@ -769,6 +769,26 @@ typedef struct {
     hrr_event_header hdr;
     int32_t ret;
     uint64_t pCopy;
+    uint64_t src_x_bytes;  /* hip_Memcpy2D::srcXInBytes */
+    uint64_t src_y;  /* hip_Memcpy2D::srcY */
+    uint32_t src_mem_type;  /* hip_Memcpy2D::srcMemoryType */
+    uint32_t pad0;  /* alignment padding */
+    uint64_t src_host;  /* hip_Memcpy2D::srcHost (capture-time) */
+    uint64_t src_device;  /* hip_Memcpy2D::srcDevice (capture-time) */
+    uint64_t src_array;  /* hip_Memcpy2D::srcArray (capture-time) */
+    uint64_t src_pitch;  /* hip_Memcpy2D::srcPitch */
+    uint64_t dst_x_bytes;  /* hip_Memcpy2D::dstXInBytes */
+    uint64_t dst_y;  /* hip_Memcpy2D::dstY */
+    uint32_t dst_mem_type;  /* hip_Memcpy2D::dstMemoryType */
+    uint32_t pad1;  /* alignment padding */
+    uint64_t dst_host;  /* hip_Memcpy2D::dstHost (capture-time) */
+    uint64_t dst_device;  /* hip_Memcpy2D::dstDevice (capture-time) */
+    uint64_t dst_array;  /* hip_Memcpy2D::dstArray (capture-time) */
+    uint64_t dst_pitch;  /* hip_Memcpy2D::dstPitch */
+    uint64_t width_bytes;  /* hip_Memcpy2D::WidthInBytes */
+    uint64_t height;  /* hip_Memcpy2D::Height */
+    uint64_t blob_hash_lo;  /* linearised H2D src blob hash lo */
+    uint64_t blob_hash_hi;  /* linearised H2D src blob hash hi */
 } hrr_args_hipDrvMemcpy2DUnaligned;
 
 /* hipError_t hipDrvMemcpy3D(const HIP_MEMCPY3D* pCopy) */
@@ -2739,6 +2759,26 @@ typedef struct {
     hrr_event_header hdr;
     int32_t ret;
     uint64_t pCopy;
+    uint64_t src_x_bytes;  /* hip_Memcpy2D::srcXInBytes */
+    uint64_t src_y;  /* hip_Memcpy2D::srcY */
+    uint32_t src_mem_type;  /* hip_Memcpy2D::srcMemoryType */
+    uint32_t pad0;  /* alignment padding */
+    uint64_t src_host;  /* hip_Memcpy2D::srcHost (capture-time) */
+    uint64_t src_device;  /* hip_Memcpy2D::srcDevice (capture-time) */
+    uint64_t src_array;  /* hip_Memcpy2D::srcArray (capture-time) */
+    uint64_t src_pitch;  /* hip_Memcpy2D::srcPitch */
+    uint64_t dst_x_bytes;  /* hip_Memcpy2D::dstXInBytes */
+    uint64_t dst_y;  /* hip_Memcpy2D::dstY */
+    uint32_t dst_mem_type;  /* hip_Memcpy2D::dstMemoryType */
+    uint32_t pad1;  /* alignment padding */
+    uint64_t dst_host;  /* hip_Memcpy2D::dstHost (capture-time) */
+    uint64_t dst_device;  /* hip_Memcpy2D::dstDevice (capture-time) */
+    uint64_t dst_array;  /* hip_Memcpy2D::dstArray (capture-time) */
+    uint64_t dst_pitch;  /* hip_Memcpy2D::dstPitch */
+    uint64_t width_bytes;  /* hip_Memcpy2D::WidthInBytes */
+    uint64_t height;  /* hip_Memcpy2D::Height */
+    uint64_t blob_hash_lo;  /* linearised H2D src blob hash lo */
+    uint64_t blob_hash_hi;  /* linearised H2D src blob hash hi */
 } hrr_args_hipMemcpyParam2D;
 
 /* hipError_t hipMemcpyParam2DAsync(const hip_Memcpy2D* pCopy, hipStream_t stream) */
@@ -2747,6 +2787,26 @@ typedef struct {
     int32_t ret;
     uint64_t pCopy;
     uint64_t stream;
+    uint64_t src_x_bytes;  /* hip_Memcpy2D::srcXInBytes */
+    uint64_t src_y;  /* hip_Memcpy2D::srcY */
+    uint32_t src_mem_type;  /* hip_Memcpy2D::srcMemoryType */
+    uint32_t pad0;  /* alignment padding */
+    uint64_t src_host;  /* hip_Memcpy2D::srcHost (capture-time) */
+    uint64_t src_device;  /* hip_Memcpy2D::srcDevice (capture-time) */
+    uint64_t src_array;  /* hip_Memcpy2D::srcArray (capture-time) */
+    uint64_t src_pitch;  /* hip_Memcpy2D::srcPitch */
+    uint64_t dst_x_bytes;  /* hip_Memcpy2D::dstXInBytes */
+    uint64_t dst_y;  /* hip_Memcpy2D::dstY */
+    uint32_t dst_mem_type;  /* hip_Memcpy2D::dstMemoryType */
+    uint32_t pad1;  /* alignment padding */
+    uint64_t dst_host;  /* hip_Memcpy2D::dstHost (capture-time) */
+    uint64_t dst_device;  /* hip_Memcpy2D::dstDevice (capture-time) */
+    uint64_t dst_array;  /* hip_Memcpy2D::dstArray (capture-time) */
+    uint64_t dst_pitch;  /* hip_Memcpy2D::dstPitch */
+    uint64_t width_bytes;  /* hip_Memcpy2D::WidthInBytes */
+    uint64_t height;  /* hip_Memcpy2D::Height */
+    uint64_t blob_hash_lo;  /* linearised H2D src blob hash lo */
+    uint64_t blob_hash_hi;  /* linearised H2D src blob hash hi */
 } hrr_args_hipMemcpyParam2DAsync;
 
 /* hipError_t hipMemcpyPeer(void* dst, int dstDeviceId, const void* src, int srcDeviceId, size_t sizeBytes) */
@@ -2970,6 +3030,8 @@ typedef struct {
     uint64_t function;
     uint64_t module;
     uint64_t kname;
+    uint64_t fname_hash_lo;  /* function name blob hash lo */
+    uint64_t fname_hash_hi;  /* function name blob hash hi */
 } hrr_args_hipModuleGetFunction;
 
 /* hipError_t hipModuleGetFunctionCount(unsigned int* count, hipModule_t module) */
@@ -4781,6 +4843,9 @@ typedef struct {
     int32_t ret;
     uint64_t module;
     uint64_t fatbin;
+    uint64_t co_hash_lo;  /* code object hash lo */
+    uint64_t co_hash_hi;  /* code object hash hi */
+    uint32_t module_id;  /* sequential module handle ID */
 } hrr_args_hipModuleLoadFatBinary;
 
 /* hipError_t hipMemcpyBatchAsync(void** dsts, void** srcs, size_t* sizes, size_t count, hipMemcpyAttributes* attrs, size_t* attrsIdxs, size_t numAttrs, size_t* failIdx, hipStream_t stream) */

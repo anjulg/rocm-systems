@@ -31,6 +31,8 @@ static inline uint64_t current_thread_id() {
   return cached;
 }
 #else
+#  include <errno.h>
+#  include <signal.h>
 #  include <unistd.h>
 #  include <sys/syscall.h>
 static inline uint64_t current_thread_id() {
@@ -95,9 +97,83 @@ static void ensure_dir(const std::string& path) {
 // open / close / flush
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Per-process ownership: write a "capture.pid" marker in the output directory
+// so that child processes that inherit HIP_HRR_CAPTURE_OUTPUT don't truncate
+// the parent's in-progress events.bin.  If the marker exists and belongs to a
+// different live process, redirect this process's capture to a per-PID sub-
+// directory.
+// ---------------------------------------------------------------------------
+
+#ifndef _WIN32
+static pid_t own_pid() { return getpid(); }
+// Returns true if the process is still alive (or we're uncertain due to EPERM).
+static bool  pid_alive(pid_t p) {
+  if (kill(p, 0) == 0) return true;
+  return (errno == EPERM);  // process exists but we lack permission
+}
+#else
+static uint32_t own_pid() { return static_cast<uint32_t>(GetCurrentProcessId()); }
+static bool     pid_alive(uint32_t) { return true; }  // conservative
+#endif
+
+// Attempt to claim the capture directory.  Returns the effective output dir
+// (may be a per-PID subdirectory when the base dir is already owned).
+static std::string claim_output_dir(const std::string& requested_dir) {
+  ensure_dir(requested_dir);
+  std::string marker_path = requested_dir + "/capture.pid";
+
+#ifdef _WIN32
+  using pid_type = uint32_t;
+#else
+  using pid_type = pid_t;
+#endif
+
+  // Try to read an existing marker.
+  if (FILE* mf = fopen(marker_path.c_str(), "r")) {
+    pid_type stored_pid = 0;
+#ifdef _WIN32
+    fscanf(mf, "%u", &stored_pid);
+#else
+    fscanf(mf, "%d", &stored_pid);
+#endif
+    fclose(mf);
+    if (stored_pid != 0 && stored_pid != own_pid() && pid_alive(stored_pid)) {
+      // Another live process owns this directory — use a per-PID subdirectory.
+      char sub[64];
+#ifdef _WIN32
+      snprintf(sub, sizeof(sub), "pid_%u", (unsigned)own_pid());
+#else
+      snprintf(sub, sizeof(sub), "pid_%d", (int)own_pid());
+#endif
+      std::string sub_dir = requested_dir + "/" + sub;
+      LogPrintfWarning(
+          "[HRR capture] Output dir '%s' is owned by PID %ld — redirecting to '%s' "
+          "to avoid corrupting the parent capture.",
+          requested_dir.c_str(), (long)stored_pid, sub_dir.c_str());
+      return sub_dir;
+    }
+  }
+
+  // Claim (or re-claim) the directory for this process.
+  if (FILE* mf = fopen(marker_path.c_str(), "w")) {
+#ifdef _WIN32
+    fprintf(mf, "%u", own_pid());
+#else
+    fprintf(mf, "%d", own_pid());
+#endif
+    fclose(mf);
+  }
+  return requested_dir;
+}
+
 bool open(const char* output_dir) {
   if (g_events_file) return true;  // already open — guard against double-invocation
-  g_output_dir = output_dir;
+
+  // Resolve the effective output directory, redirecting child processes that
+  // would otherwise truncate the parent's in-progress events.bin.
+  g_output_dir = claim_output_dir(std::string(output_dir));
+
   ensure_dir(g_output_dir);
   ensure_dir(g_output_dir + "/blobs");
   ensure_dir(g_output_dir + "/code_objects");
@@ -114,14 +190,15 @@ bool open(const char* output_dir) {
   return true;
 }
 
-void flush(const char* output_dir) {
+void flush(const char* /*output_dir*/) {
   {
     std::lock_guard<std::mutex> lk(g_file_mu);
     if (g_events_file) fflush(g_events_file);
   }
 
-  // Write manifest.json
-  std::string manifest_path = std::string(output_dir) + "/manifest.json";
+  // Write manifest.json to the effective output directory (may differ from the
+  // requested one when this process was redirected to a per-PID subdirectory).
+  std::string manifest_path = g_output_dir + "/manifest.json";
   FILE* mf = fopen(manifest_path.c_str(), "w");
   if (mf) {
     fprintf(mf,
@@ -138,10 +215,30 @@ void flush(const char* output_dir) {
 }
 
 void close() {
-  std::lock_guard<std::mutex> lk(g_file_mu);
-  if (g_events_file) {
-    fclose(g_events_file);
-    g_events_file = nullptr;
+  {
+    std::lock_guard<std::mutex> lk(g_file_mu);
+    if (g_events_file) {
+      fclose(g_events_file);
+      g_events_file = nullptr;
+    }
+  }
+  // Remove the ownership marker so the next run can claim this directory.
+  // Only remove it if WE wrote it (our PID matches), to avoid a child process
+  // deleting the parent's marker via a late atexit().
+  if (!g_output_dir.empty()) {
+    std::string marker_path = g_output_dir + "/capture.pid";
+    if (FILE* mf = fopen(marker_path.c_str(), "r")) {
+#ifdef _WIN32
+      uint32_t stored_pid = 0;
+      fscanf(mf, "%u", &stored_pid);
+#else
+      pid_t stored_pid = 0;
+      fscanf(mf, "%d", &stored_pid);
+#endif
+      fclose(mf);
+      if (stored_pid == own_pid())
+        fs::remove(marker_path);
+    }
   }
 }
 
@@ -159,6 +256,13 @@ void write_event_raw(uint16_t api_id, hrr_event_header* hdr, uint16_t payload_le
   {
     std::lock_guard<std::mutex> lk(g_file_mu);
     if (!g_events_file) return;
+  }
+  // Guard: payload_len must cover at least the header itself.
+  if (payload_len < static_cast<uint16_t>(sizeof(hrr_event_header))) {
+    LogPrintfError("[HRR capture] write_event_raw: api_id=%u payload_len=%u < header size %zu"
+                  " — skipping corrupt write",
+                  (unsigned)api_id, (unsigned)payload_len, sizeof(hrr_event_header));
+    return;
   }
   hdr->event_type     = api_id;
   hdr->sequence_id    = g_seq_id.fetch_add(1, std::memory_order_relaxed);
